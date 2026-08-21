@@ -169,8 +169,9 @@ SMW 优化到 60 fps，每帧就自然回到 400，不用改任何常数。
 
 ## SMW 即时存档
 
-仅 ROM 内部名为 `SUPER MARIOWORLD` 的卡带启用：同时长按 SELECT + START 1 秒保存，
-下次启动同一 ROM 自动恢复。单份快照 365,120 字节；Flash 尾部 960 KiB 的 FAT 分区
+仅 ROM 内部名为 `SUPER MARIOWORLD` 的卡带启用：同时长按 SELECT + A 1 秒保存，
+**SELECT + X 1 秒游戏内读档**（原地回到最新存档，不用退回菜单再选一遍游戏），
+下次启动同一 ROM 也会自动恢复。单份快照 365,120 字节；Flash 尾部 960 KiB 的 FAT 分区
 套 wear levelling，并用 A/B 双槽、ROM CRC、状态 CRC 和序号保证中途断电仍能回退。
 功能只包装本核心已有的 `S9xSaveState` / `S9xLoadState`，没有修改 `src/`。
 

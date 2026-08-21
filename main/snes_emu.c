@@ -14,7 +14,8 @@
  *  2. **仅 SMW 有即时存档，L/R 暂无实体键**。Shield 四个大键已按
  *     物理方位映射完整 SNES ABXY，F/E 小键对应 SELECT/START。SMW 用
  *     SELECT+A（A 键实体丝印是 B）长按 1 秒保存，实现在宿主 snes_save.c，
- *     不改 Snes9x 核心。SELECT+START 长按 1 秒是全局退出键，触发
+ *     不改 Snes9x 核心。SELECT+X 长按 1 秒是游戏内读档，原地回到最新存档，
+ *     不用退回菜单再选一遍。SELECT+START 长按 1 秒是全局退出键，触发
  *     esp_restart() 软重启回到 ROM 菜单——没有任何模拟器落盘卡带电池
  *     SRAM，重启不丢真实存档。
  *
@@ -147,6 +148,13 @@ _Static_assert(SNES_AUDIO_MAX_FRAMES * 2 <= SOUND_BUFFER_SIZE,
  * 避免正常按 START 暂停时误存；松开以后才能再触发下一次。 */
 #define SAVE_COMBO_BITS    (GAMEPAD_BIT_SELECT | GAMEPAD_BIT_A)
 #define SAVE_HOLD_US       1000000
+
+/* 游戏内读档：SELECT + X 长按 1 秒，原地回到上次存的位置，不用退回菜单
+ * 再选一遍游戏。选 X 是为了和启动时「按住 X 恢复上一份存档」呼应 ——
+ * X 这颗键在这台机器上的语义统一是「读档相关」。
+ * 同样长按 1 秒 + 按下起就不传给游戏，避免 SMW 里跑跳时误触。 */
+#define LOAD_COMBO_BITS    (GAMEPAD_BIT_SELECT | GAMEPAD_BIT_X)
+#define LOAD_HOLD_US       1000000
 
 /* 退出到 ROM 菜单：SELECT+START 长按 1 秒触发 esp_restart()。全局键，不像
  * 存档那样区分卡带——没有任何模拟器实现卡带电池 SRAM 落盘（SNES 唯一的
@@ -562,7 +570,8 @@ esp_err_t snes_emu_run(const rom_store_entry_t *entry, uint16_t launch_keys)
     printf("开始模拟，跳帧 %d（画 1 帧跳 %d 帧）。\n\n",
            SNES_FRAMESKIP, SNES_FRAMESKIP);
     if (save_enabled) {
-        printf("SMW 即时存档：同时长按 SELECT + A 1 秒保存；下次启动自动恢复。%s\n\n",
+        printf("SMW 即时存档：SELECT+A 长按 1 秒保存，SELECT+X 长按 1 秒读档；"
+               "下次启动也会自动恢复。%s\n\n",
                cold_start_requested
                    ? "本次按住 Y 跳过恢复并从头开始，原存档仍保留。"
                    : (resumed ? (recovered_previous
@@ -615,6 +624,8 @@ esp_err_t snes_emu_run(const rom_store_entry_t *entry, uint16_t launch_keys)
     int64_t next_frame   = stat_t0;
     int64_t save_hold_t0 = 0;
     bool save_latched    = false;
+    int64_t load_hold_t0 = 0;
+    bool load_latched    = false;
     int64_t exit_hold_t0 = 0;
 
     while (1) {
@@ -661,6 +672,49 @@ esp_err_t snes_emu_run(const rom_store_entry_t *entry, uint16_t launch_keys)
         } else {
             save_hold_t0 = 0;
             save_latched = false;
+        }
+
+        /* 游戏内读档，和上面的存档完全对称。以前只在启动时恢复一次，想重来
+         * 得先退回菜单再选一遍游戏；现在原地就能回到上次存的位置。
+         *
+         * 恢复成功后要把 resumed 重新置上：那个「活动声道非零但 PCM 永久为零」
+         * 的看门狗只在 resumed 期间生效，而它防的正是恢复快照带来的状态不一致。 */
+        bool load_combo = save_enabled &&
+                          (s_pad_state & LOAD_COMBO_BITS) == LOAD_COMBO_BITS;
+        if (load_combo) {
+            s_pad_state &= ~LOAD_COMBO_BITS;
+            int64_t now = esp_timer_get_time();
+            if (load_hold_t0 == 0) load_hold_t0 = now;
+
+            if (!load_latched && now - load_hold_t0 >= LOAD_HOLD_US) {
+                load_latched = true;
+                show_save_notice("LOADING...", C_YELLOW);
+                bool ok = snes_save_load_latest(rom_crc);
+                /* 屏上有提示，但串口也打一行 —— 不接屏调试时这是唯一的凭据。 */
+                ESP_LOGI(TAG, "游戏内读档：%s", ok ? "成功" : "没有可用存档");
+                if (ok) {
+                    rebuild_sound_after_resume();
+                    resumed = true;
+                    resume_zero_frames = 0;
+                }
+                show_save_notice(ok ? "LOAD OK" : "NO SAVE",
+                                 ok ? C_GREEN : C_RED);
+                vTaskDelay(pdMS_TO_TICKS(700));
+
+                /* 和存档那条一样：读 Flash 的停顿不算模拟性能，也不能让配速器
+                 * 误追赶几百帧。音频累加器不用手动清，它的欠账本来就封了顶。 */
+                next_frame = stat_t0 = esp_timer_get_time();
+                skip_frames = 0;
+                emu_frames = drawn_frames = 0;
+                emu_us = blit_us = audio_us = 0;
+                input_us = pace_us = 0;
+                serial_us = gamepad_us = usb_us = 0;
+                pcm_peak = pcm_nonzero = 0;
+                continue;
+            }
+        } else {
+            load_hold_t0 = 0;
+            load_latched = false;
         }
 
         bool exit_combo = (s_pad_state & EXIT_COMBO_BITS) == EXIT_COMBO_BITS;

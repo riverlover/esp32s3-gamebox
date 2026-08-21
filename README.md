@@ -33,7 +33,8 @@ ESP32-S3-DevKitC-1 兼容板（N16R8）+ ST7789 SPI 屏（240×320，横屏 320�
       可玩帧率**：SMW 45/60 fps、Mario Kart 50/60 fps，大量热数据和渲染中间结果
       塞不进约 179 KB 的可用内部 SRAM。另外 Super FX / SA-1 / S-DD1 没有实现，
       这类卡带会黑屏。详见 [`components/snes9x/README.gamebox.md`](components/snes9x/README.gamebox.md)
-- [x] SMW 即时存档：SELECT + 右方大键（丝印 B，代码里的 SNES A）长按 1 秒，
+- [x] SMW 即时存档：SELECT + 右方大键（丝印 B，代码里的 SNES A）长按 1 秒存，
+      SELECT + 上方大键（丝印 A，SNES X）长按 1 秒读，
       RST 后启动同一 ROM 自动恢复；960 KiB FAT + wear levelling，双槽交替写
       和 CRC 防断电损坏
 - [x] 全局退出键：任意模拟器里 SELECT + START 长按 1 秒，`esp_restart()`
@@ -208,6 +209,12 @@ START 确认；上一份不存在或损坏时仍会退回最新一份，不会�
 恢复，但仍保留原来的两份存档。确认新进度后再次长按 SELECT + 右方大键保存，新状态
 就会成为下次自动恢复的最新存档。
 
+**游戏内读档**：同时长按小按键 F（SELECT）和上方大键（丝印 A，代码里映射成
+`GAMEPAD_BIT_X`）1 秒，显示 `LOADING...`，成功后原地回到最新那份存档的位置，
+**不用退回菜单再选一遍游戏**。和存档完全对称。选 X 是为了和启动时「按住 X 恢复
+上一份」呼应——X 这颗键在这台机器上统一是「读档相关」。没有可用存档时显示
+`NO SAVE`，游戏原样继续。
+
 **退出到 ROM 选单**：不分平台，游戏中同时长按小按键 F（SELECT）和 E（START）1 秒
 会显示退出提示（SNES/GB/GBC 有画面提示，NES/Genesis 直接重启）并触发 `esp_restart()`
 软重启，回到开机选单重新选游戏。这是系统级组合键，长按期间该组合不会传给正在跑的
@@ -228,11 +235,16 @@ idf.py -p /dev/cu.usbserial-A5069RR4 monitor
 
 **焦点要在 monitor 窗口里**，然后：
 
+（`U`/`I` 是给 SNES 补的两颗面键。低 8 位和 NES 手柄一致，NES/GB/GBC 会忽略这两位；
+补上它们之后串口这条调试后路才够得到 SNES 的全部控制，包括 SELECT+X 读档。）
+
 | 键 | 作用 |
 |---|---|
 | `W` `A` `S` `D` 或方向键 | 上下左右 |
 | `K` 或 `Z` | A（跳） |
 | `J` 或 `X` | 选单：平台页调声音、列表页返回；游戏：B（跑 / 发射） |
+| `U` | SNES X（游戏内读档要用的修饰键） |
+| `I` | SNES Y |
 | 回车 | START |
 | Tab | SELECT |
 | 空格 | 全部松开（按键卡住时用） |
