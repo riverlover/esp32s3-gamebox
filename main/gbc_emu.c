@@ -19,6 +19,7 @@
 #include "input_gamepad.h"
 #include "input_serial.h"
 #include "input_usb.h"
+#include "nes_emu.h"
 #include "rgb_led.h"
 #include "gnuboy.h"
 #include "esp_heap_caps.h"
@@ -178,6 +179,10 @@ static esp_err_t alloc_buffers(void)
 esp_err_t gbc_emu_run(const rom_store_entry_t *entry)
 {
     if (!entry || entry->size < 0x150) return ESP_ERR_INVALID_ARG;
+
+    /* GB/GBC 不用 NES 的两块内部视频缓冲，先释放才能让 TF/ZIP 读盘拿到 64 KB
+     * DMA 中转；解压结束后再分自己的 PSRAM 帧缓冲和小音频缓冲。 */
+    nes_emu_release_prealloc();
 
     rom_store_image_t image = {0};
     esp_err_t err = rom_store_load(entry, 0, &image);

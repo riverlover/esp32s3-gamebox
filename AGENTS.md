@@ -108,14 +108,18 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
 （`partitions.csv` 和 `tools/pack_roms.py` 暂时留着，等确定改作他用再处理）。
 
 - 卡上随便怎么摆。`rom_store.c` 从 `/sd` 递归扫描（最多 4 层），认这些扩展名：
-  `.nes .gb .gbc .sfc .smc .md .bin`。前缀是 `.` / `_` / `removed` 的目录整棵跳过，
-  `System Volume Information` 也跳过。压缩包会打一行提示——**设备上不解压，
-  要先在电脑上解开**（以前 `pack_roms.py` 会自动解，卡上没这个待遇了）。
-- 目录名只是给人看的，平台不看目录。仓库约定是 `/sd/roms/{nes,gb,gbc,snes,md}/`。
-- ⚠️ **扫描时一个文件都不打开**，平台只按扩展名定、大小只靠 `stat()`。这是实测
+  `.nes .gb .gbc .sfc .smc .md .bin .zip`。前缀是 `.` / `_` / `removed` 的目录整棵跳过，
+  `System Volume Information` 也跳过。RAR / 7z 等其他压缩格式仍需先在电脑上解开。
+- 裸 ROM 的平台不看目录，只按扩展名定。ZIP 为保证开机速度，扫描时不 `stat`、不
+  `open`、不读内容：路径含 `nes/gb/gbc/snes/md` 时先归进对应平台，否则临时归到
+  ZIP 分类。用户选中后才解析 ZIP，取第一个支持的 ROM。支持普通单卷 ZIP 的
+  store(0) / deflate(8)，不支持加密、ZIP64 和多卷。仓库约定目录仍是
+  `/sd/roms/{nes,gb,gbc,snes,md}/`。
+- ⚠️ **扫描裸 ROM 时一个文件都不打开**，平台只按扩展名定、大小只靠 `stat()`。这是实测
   逼出来的：SD 命令的固定开销远大于传输字节数（本机那张 2 GB 老卡每条命令要
   40 ms），原来每个文件都 open+读头+seek，39 个游戏扫 14 秒；改成纯 readdir+stat
-  之后 2.8 秒。**ROM 头照样验，只是挪到了 `rom_store_load()`。**
+  之后 2.8 秒；ZIP 连 stat 也跳过后，EZSD1 卡扫到 256 项上限两次实测 2.39～5.52 秒。
+  **ROM 头照样验，只是挪到了选中后的装载阶段。**
   代价：扩展名骗人的文件（尤其通用的 `.bin`）会进到菜单，选中时才报错。
 - GB / GBC 按扩展名分**只影响菜单分组**：`gbc_emu.c` 根本不读 `entry->system`，
   gnuboy 自己从 ROM 头 0x143 判 CGB/SGB/DMG（`gnuboy.c:234`）。
@@ -124,12 +128,16 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
   `sdmmc_read_sectors()` 发现目标不是 DMA-capable 就退化成一次一个 512 字节扇区
   读 + memcpy（IDF 的 `sdmmc_cmd.c`）。本机单扇区读 72 ms —— 4 MiB 卡带这样读要
   十分钟。即使有内部中转，`fread` 仍会把读请求拆碎：同一个 1 MiB ROM 实测
-  84 秒 / 12 KB/s；换 `read` 后 16 KB 中转为 5.6 秒。中转缓冲按 32→16→8→4 KB
-  梯度回退。SNES 特意在 119 KB 内部帧缓冲之前装 ROM，能拿到 32 KB 中转，实测
-  同一文件 3.3 秒 / 312 KB/s；装完释放中转，再分帧缓冲，二者不抢内部 SRAM。
+  84 秒 / 12 KB/s；换 `read` 后 16 KB 中转为 5.6 秒。中转缓冲按 64→32→16→8→4 KB
+  梯度回退。SNES 特意在 119 KB 内部帧缓冲之前装 ROM；NES 则借用尚未给 PPU 使用的
+  约 63 KB vidbuf。ZIP 解压同样复用这块 DMA RAM：`1943.zip` 的 256 KB ROM 从
+  16 KB 块的 16.87 秒降到 63 KB 块的 7.25 秒。装完再交还，不和运行期内存争用。
 - SNES 的 512 字节拷贝机头只从文件大小就能判出来（整卡带都是 `0x400` 的整数倍），
   不用开文件。`rom_store_load(entry, extra_bytes, ...)` 仍然直接读进最终可写缓冲，
   不能先读一份再复制 4 MiB。
+- `loading_screen.c` 在菜单选中后接管默认 288×224 画布。`rom_store.c` 的同步回调
+  按实际字节数推进裸 ROM / ZIP，界面每 5% 才重画一次；不要改成每个 64 KB 块都
+  无条件推屏，4 MiB ROM 会凭空多刷 64 帧并拖慢加载。
 - 所有失败都只让 `rom_store_init()` 返回 0、不 abort：没插卡、卡挂不上、卡上没有
   合法 ROM，都回退到 `nes_emu.c` 里 `ROM_CHOICE` 选的编译期嵌入 ROM。
   ⚠️ 目前**没卡时屏幕上没有任何提示**，直接进内置游戏，看起来像坏了。

@@ -351,7 +351,10 @@ esp_err_t nes_emu_run(const rom_store_entry_t *entry)
         rom_size = rom_end - rom_start;
         name     = ROM_NAME;
     } else {
-        esp_err_t err = rom_store_load(entry, 0, &image);
+        /* 载入前 vidbuf 还没开始画，借一块约 60 KB 内部 RAM 给 TF/ZIP 做 DMA
+         * 读盘；返回后 ROM 已在 PSRAM，PPU 再照常把它当视频缓冲使用。 */
+        esp_err_t err = rom_store_load_with_scratch(
+            entry, 0, &image, s_vidbuf[0], NES_SCREEN_PITCH * NES_SCREEN_HEIGHT);
         if (err != ESP_OK) return err;
         rom = image.data;
         rom_size = image.size;

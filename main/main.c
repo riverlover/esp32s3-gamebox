@@ -20,6 +20,7 @@
 #include "audio_output.h"
 #include "input_serial.h"
 #include "input_usb.h"
+#include "loading_screen.h"
 #include "input_gamepad.h"
 #include "nofrendo.h"
 #include "nes_emu.h"
@@ -261,12 +262,28 @@ void app_main(void)
     uint16_t launch_keys = 0;
     rom_menu_pick(&entry, &launch_keys);
 
-    rom_system_t system = entry ? entry->system : ROM_SYSTEM_NES;
-    esp_err_t run_err = system == ROM_SYSTEM_NES     ? nes_emu_run(entry)
-                      : system == ROM_SYSTEM_SNES    ? snes_emu_run(entry, launch_keys)
-                      : system == ROM_SYSTEM_GENESIS ? genesis_emu_run(entry)
-                                                     : gbc_emu_run(entry);
+    /* ZIP 为了开机快只登记外层文件名，到玩家真正选择时才读一次内部目录。 */
+    rom_store_entry_t resolved;
+    const rom_store_entry_t *run_entry = entry;
+    if (entry) {
+        loading_screen_begin(entry->name);
+        rom_store_set_progress_callback(loading_screen_progress);
+    }
+    if (entry && rom_store_resolve(entry, &resolved) != ESP_OK) {
+        ESP_LOGE(TAG, "%s 不是可用的 ROM ZIP，1.5 秒后返回菜单", entry->name);
+        loading_screen_error("ZIP 不可用");
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        esp_restart();
+    }
+    if (entry) run_entry = &resolved;
+
+    rom_system_t system = run_entry ? run_entry->system : ROM_SYSTEM_NES;
+    esp_err_t run_err = system == ROM_SYSTEM_NES     ? nes_emu_run(run_entry)
+                      : system == ROM_SYSTEM_SNES    ? snes_emu_run(run_entry, launch_keys)
+                      : system == ROM_SYSTEM_GENESIS ? genesis_emu_run(run_entry)
+                                                     : gbc_emu_run(run_entry);
     if (run_err != ESP_OK) {
         ESP_LOGE(TAG, "模拟器启动失败");
+        loading_screen_error("游戏启动失败");
     }
 }

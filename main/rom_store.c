@@ -1,9 +1,9 @@
 /*
  * TF 卡上的游戏目录
  *
- * 开机递归扫描卡，按扩展名挑候选、按 **ROM 头** 判定平台（目录名只是给人看的，
- * 放错目录不影响结果），把目录建在 PSRAM；用户选中之后 rom_store_load() 才把
- * 那个文件读进来。
+ * 开机递归扫描卡：裸 ROM 按扩展名挑候选；ZIP 不 stat、不 open、不读内容，先按
+ * 外层文件名加入菜单。用户选中之后才读 ZIP 目录、识别内部 ROM，再由
+ * rom_store_load() 把 ROM 读入或解压进来。
  *
  * 早期是从 flash 的 roms 分区 mmap 一整块打包镜像，entry->data 直接是 flash 指针，
  * 零拷贝。换到 SD 之后这个模型不成立了 —— 文件系统没法 mmap，字节必须显式读出来。
@@ -11,12 +11,12 @@
  * 1 MiB 约 3.3 秒，4 MiB 按吞吐量约 13 秒），换来的是容量从 13 MB 变成整张卡、
  * 加游戏不用重烧固件。
  *
- * ⚠ 扫描时**不打开任何文件**，平台只按扩展名定、大小只按 stat 取。这不是偷懒，
- * 是实测逼出来的：这张卡每条 SD 命令有约 40 ms 的固定就绪等待（无数据的 CMD13
- * 都要 40 ms，单扇区读 72 ms，而边际成本只有 0.30 ms/扇区）。原来每个文件都
- * open+读头+seek，39 个游戏要扫 14 秒。改成纯 readdir+stat 之后事务数掉一个量级。
- * ROM 头照样验，只是挪到 rom_store_load()——那时候反正要把整个文件读进来。
- * 代价是扩展名骗人的文件（尤其通用的 .bin）会出现在菜单里，选中时才报错。
+ * ⚠ 扫描裸 ROM 时**不打开文件**，平台只按扩展名定、大小只按 stat 取。这不是偷懒，
+ * 是实测逼出来的：这张卡每条 SD 命令有约 40 ms 的固定就绪等待。原来每个文件都
+ * open+读头+seek，39 个游戏要扫 14 秒；纯 readdir+stat 之后只要几秒。ZIP 连 stat
+ * 也跳过，路径含 nes/gb/gbc/snes/md 时先按目录分组，否则临时放进 ZIP 分类；选中
+ * 后再识别。当前 EZSD1 卡扫到 256 项上限两次实测 2.39～5.52 秒。ROM 头统一挪到
+ * 装载时再验。
  *
  * GB / GBC 靠扩展名分不准，但**这只影响菜单分组**：gbc_emu.c 根本不读
  * entry->system，gnuboy 自己从 ROM 头 0x143 判 CGB/SGB/DMG（gnuboy.c:234）。
@@ -37,6 +37,7 @@
 #include <unistd.h>
 
 #include "rom_store.h"
+#include "rom_zip.h"
 #include "sd_card.h"
 
 #include "esp_crc.h"
@@ -72,8 +73,9 @@ static int     s_n_stat;
  * 卡带这样读要十分钟。先读进内部 RAM 让它走多扇区 DMA，再 memcpy 到 PSRAM，
  * 实测 64 KB 一次读能到 538 KB/s。
  *
- * 32 KB 是在内部 RAM 余量和摊薄固定开销之间取的折中；这块缓冲用完立刻释放。 */
-#define READ_CHUNK (32 * 1024)
+ * 64 KB 是这张卡实测的吞吐甜点；内部 RAM 不够时再按 32→16→8→4 KB 回退。
+ * 这块缓冲用完立刻释放，模拟器也可借出尚未使用的预分配区。 */
+#define READ_CHUNK (64 * 1024)
 
 /* 防止一个坏掉的目录项声明出远超 PSRAM 的尺寸。当前最大卡带 DKC 是 4 MiB；
  * 留到 8 MiB 既覆盖合理的 SNES 卡，也绝不会做失控的大分配。 */
@@ -93,6 +95,17 @@ static int s_count = -1;          /* -1 = 还没扫过 */
 static char  *s_pool;
 static size_t s_pool_used;
 static size_t s_pool_size;
+static rom_store_progress_fn s_progress;
+
+void rom_store_set_progress_callback(rom_store_progress_fn callback)
+{
+    s_progress = callback;
+}
+
+static void progress_emit(const char *stage, unsigned percent)
+{
+    if (s_progress) s_progress(stage, percent > 100 ? 100 : percent);
+}
 
 /* 递归共用一个路径缓冲：每层在栈上开 160 字节的话，main task 那 3584 字节的栈
  * 扛不住四层递归再叠 FATFS 自己的开销。同理头部缓冲也放静态区。
@@ -180,8 +193,8 @@ static bool ext_is(const char *ext, const char *want)
 
 static bool ext_is_archive(const char *ext)
 {
-    return ext_is(ext, ".zip") || ext_is(ext, ".7z") || ext_is(ext, ".rar") ||
-           ext_is(ext, ".gz")  || ext_is(ext, ".tar") || ext_is(ext, ".tgz");
+    return ext_is(ext, ".7z") || ext_is(ext, ".rar") || ext_is(ext, ".gz") ||
+           ext_is(ext, ".tar") || ext_is(ext, ".tgz");
 }
 
 /* 显示名：去掉路径和扩展名，再去掉 (...) [...] 那些区域/版本标记和开头的
@@ -271,20 +284,122 @@ static bool classify(const char *ext, size_t file_size,
     return false;
 }
 
+static bool add_entry(const char *path, const char *fname, const char *ext,
+                      rom_system_t system, size_t offset, size_t rom_size,
+                      rom_storage_t storage, const rom_zip_member_t *zip)
+{
+    if (s_count >= ROM_STORE_MAX) return false;
+
+    char namebuf[ROM_STORE_NAME_LEN];
+    display_name(fname, ext, namebuf, sizeof(namebuf));
+
+    char *name = pool_dup(namebuf, strlen(namebuf));
+    char *stored_path = name ? pool_dup(path, strlen(path)) : NULL;
+    if (!stored_path) {
+        ESP_LOGW(TAG, "名字/路径池满了，%s 之后的游戏不再收录", fname);
+        return false;
+    }
+
+    rom_store_entry_t *entry = &s_entries[s_count++];
+    entry->name        = name;
+    entry->path        = stored_path;
+    entry->size        = rom_size;
+    entry->file_offset = offset;
+    entry->storage     = storage;
+    entry->system      = system;
+    if (zip) {
+        entry->archive_offset = zip->local_header_offset;
+        entry->stored_size    = zip->compressed_size;
+        entry->archive_crc32  = zip->crc32;
+    }
+    return true;
+}
+
+static bool path_segment_is(const char *segment, size_t len, const char *want)
+{
+    return strlen(want) == len && strncasecmp(segment, want, len) == 0;
+}
+
+/* 开机不打开 ZIP。按仓库推荐的 /roms/{nes,gb,gbc,snes,md}/ 目录名先放进
+ * 对应平台；不按这个目录摆也能显示，只是先放 ZIP 分类，选中后再认平台。 */
+static rom_system_t zip_system_from_path(const char *path)
+{
+    const char *p = path;
+    while (*p) {
+        while (*p == '/') p++;
+        const char *end = strchr(p, '/');
+        if (!end) break;   /* 最后一段是 ZIP 文件名，不拿它猜平台 */
+        size_t len = (size_t)(end - p);
+        if (path_segment_is(p, len, "nes")) return ROM_SYSTEM_NES;
+        if (path_segment_is(p, len, "gbc")) return ROM_SYSTEM_GBC;
+        if (path_segment_is(p, len, "gb")) return ROM_SYSTEM_GB;
+        if (path_segment_is(p, len, "snes")) return ROM_SYSTEM_SNES;
+        if (path_segment_is(p, len, "md") || path_segment_is(p, len, "genesis") ||
+            path_segment_is(p, len, "megadrive")) return ROM_SYSTEM_GENESIS;
+        p = end + 1;
+    }
+    return ROM_SYSTEM_ZIP;
+}
+
+typedef struct {
+    rom_store_entry_t *resolved;
+    bool found;
+} zip_resolve_ctx_t;
+
+static bool resolve_zip_member(const rom_zip_member_t *member, void *opaque)
+{
+    zip_resolve_ctx_t *ctx = opaque;
+    const char *fname = member->name;
+    const char *ext = strrchr(fname, '.');
+    if (!ext || (fname[0] == '.' || fname[0] == '_')) return true;
+    if (!ext_is(ext, ".nes") && !ext_is(ext, ".gb") && !ext_is(ext, ".gbc") &&
+        !ext_is(ext, ".sfc") && !ext_is(ext, ".smc") && !ext_is(ext, ".md") &&
+        !ext_is(ext, ".bin")) return true;
+    if ((member->flags & 1u) ||
+        (member->method != ROM_ZIP_METHOD_STORE &&
+         member->method != ROM_ZIP_METHOD_DEFLATE) ||
+        member->uncompressed_size > ROM_MAX_SIZE) return true;
+
+    rom_system_t system;
+    size_t offset, rom_size;
+    if (!classify(ext, member->uncompressed_size, &system, &offset, &rom_size)) {
+        return true;
+    }
+
+    rom_store_entry_t *entry = ctx->resolved;
+    entry->size = rom_size;
+    entry->file_offset = offset;
+    entry->archive_offset = member->local_header_offset;
+    entry->stored_size = member->compressed_size;
+    entry->archive_crc32 = member->crc32;
+    entry->storage = member->method == ROM_ZIP_METHOD_STORE
+                   ? ROM_STORAGE_ZIP_STORE : ROM_STORAGE_ZIP_DEFLATE;
+    entry->system = system;
+    ctx->found = true;
+    return false;  /* 一个 ZIP 只启动第一个可识别 ROM */
+}
+
 static void try_add(const char *path, const char *fname)
 {
     const char *ext = strrchr(fname, '.');
     if (!ext) return;
 
+    bool is_zip = ext_is(ext, ".zip");
     if (ext_is_archive(ext)) {
-        /* 以前这类文件是静默消失的，最难查 —— 用户以为放进去了。 */
-        ESP_LOGW(TAG, "%s 是压缩包，设备上不解压，请先在电脑上解开", fname);
+        ESP_LOGW(TAG, "%s 不是 ZIP，设备上不支持，请先在电脑上解开", fname);
         return;
     }
-    if (!ext_is(ext, ".nes") && !ext_is(ext, ".gb") && !ext_is(ext, ".gbc") &&
+    if (!is_zip && !ext_is(ext, ".nes") && !ext_is(ext, ".gb") && !ext_is(ext, ".gbc") &&
         !ext_is(ext, ".sfc") && !ext_is(ext, ".smc") && !ext_is(ext, ".md") &&
         !ext_is(ext, ".bin")) {
         return;     /* 卡上本来就有别的文件，不吭声 */
+    }
+
+    if (is_zip) {
+        /* 用户要求开机快速显示：不 stat、不 open、不读 ZIP 内容。 */
+        add_entry(path, fname, ext, zip_system_from_path(path), 0, 0,
+                  ROM_STORAGE_ZIP_PENDING, NULL);
+        return;
     }
 
     struct stat st;
@@ -296,6 +411,7 @@ static void try_add(const char *path, const char *fname)
 #endif
     if (strc != 0 || st.st_size <= 0) return;
     size_t file_size = (size_t)st.st_size;
+
     if (file_size > ROM_MAX_SIZE) {
         ESP_LOGW(TAG, "%s 有 %u MB，超过 %u MB 上限，跳过",
                  fname, (unsigned)(file_size / (1024 * 1024)),
@@ -310,22 +426,7 @@ static void try_add(const char *path, const char *fname)
         return;
     }
 
-    char namebuf[ROM_STORE_NAME_LEN];
-    display_name(fname, ext, namebuf, sizeof(namebuf));
-
-    char *name = pool_dup(namebuf, strlen(namebuf));
-    char *stored_path = name ? pool_dup(path, strlen(path)) : NULL;
-    if (!stored_path) {
-        ESP_LOGW(TAG, "名字/路径池满了，%s 之后的游戏不再收录", fname);
-        return;
-    }
-
-    s_entries[s_count].name        = name;
-    s_entries[s_count].path        = stored_path;
-    s_entries[s_count].size        = rom_size;
-    s_entries[s_count].file_offset = offset;
-    s_entries[s_count].system      = system;
-    s_count++;
+    add_entry(path, fname, ext, system, offset, rom_size, ROM_STORAGE_FILE, NULL);
 }
 
 /* 前缀是这几样的目录整棵跳过：`.` 是系统隐藏目录（含 macOS 的 .Spotlight-V100
@@ -426,109 +527,197 @@ const rom_store_entry_t *rom_store_entry(int i)
     return &s_entries[i];
 }
 
+esp_err_t rom_store_resolve(const rom_store_entry_t *entry,
+                            rom_store_entry_t *resolved)
+{
+    if (!entry || !resolved) return ESP_ERR_INVALID_ARG;
+    *resolved = *entry;
+    if (entry->storage != ROM_STORAGE_ZIP_PENDING) return ESP_OK;
+
+    progress_emit("识别 ZIP", 3);
+
+    struct stat st;
+    if (stat(entry->path, &st) != 0 || st.st_size < 0) {
+        ESP_LOGE(TAG, "打不开 ZIP %s（卡被拔了？）", entry->path);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    int64_t t0 = esp_timer_get_time();
+    zip_resolve_ctx_t ctx = { .resolved = resolved };
+    esp_err_t err = rom_zip_scan(entry->path, (size_t)st.st_size,
+                                 resolve_zip_member, &ctx);
+    if (err != ESP_OK) return err;
+    if (!ctx.found) {
+        ESP_LOGE(TAG, "%s 里没有受支持的 ROM（只认 NES/GB/GBC/SNES/MD）",
+                 entry->name);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "%s 已按需识别：平台 %d，解压后 %u KB，目录耗时 %lld ms",
+             entry->name, (int)resolved->system,
+             (unsigned)(resolved->size / 1024),
+             (long long)((esp_timer_get_time() - t0) / 1000));
+    progress_emit("识别 ZIP", 10);
+    return ESP_OK;
+}
+
 void rom_store_usage(uint64_t *used_bytes, uint64_t *capacity_bytes)
 {
     sd_card_usage(used_bytes, capacity_bytes);
 }
 
-esp_err_t rom_store_load(const rom_store_entry_t *entry, size_t extra_bytes,
-                         rom_store_image_t *out)
+static void zip_load_progress(void *ctx, size_t done, size_t total)
 {
-    if (!entry || !out || entry->size > SIZE_MAX - extra_bytes) {
+    (void)ctx;
+    unsigned percent = total ? 10u + (unsigned)(done * 85u / total) : 10u;
+    progress_emit("解压 ZIP", percent);
+}
+
+esp_err_t rom_store_load_with_scratch(const rom_store_entry_t *entry,
+                                      size_t extra_bytes,
+                                      rom_store_image_t *out,
+                                      uint8_t *scratch, size_t scratch_size)
+{
+    if (!entry || !out || entry->storage == ROM_STORAGE_ZIP_PENDING ||
+        entry->size > SIZE_MAX - entry->file_offset ||
+        entry->size + entry->file_offset > SIZE_MAX - extra_bytes) {
         return ESP_ERR_INVALID_ARG;
     }
     memset(out, 0, sizeof(*out));
 
-    uint8_t *rom = heap_caps_malloc(entry->size + extra_bytes,
+    /* ZIP 里的 .smc 可能还带 512 字节拷贝机头。先完整解压、验 ZIP CRC，再原地
+     * 左移去头；只多占 512 字节，不会同时保留两份大 ROM。 */
+    size_t source_size = entry->size + entry->file_offset;
+    size_t alloc_size = source_size + extra_bytes;
+    uint8_t *rom = heap_caps_malloc(alloc_size,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!rom) {
         ESP_LOGE(TAG, "%s 缓冲分配失败：需要 %u KB PSRAM",
-                 entry->name, (unsigned)((entry->size + extra_bytes) / 1024));
+                 entry->name, (unsigned)(alloc_size / 1024));
         return ESP_ERR_NO_MEM;
     }
 
     int64_t t0 = esp_timer_get_time();
-    int fd = open(entry->path, O_RDONLY);
-    if (fd < 0) {
-        ESP_LOGE(TAG, "打不开 %s（errno %d: %s，卡被拔了？）",
-                 entry->path, errno, strerror(errno));
-        free(rom);
-        return ESP_ERR_NOT_FOUND;
-    }
-    if (entry->file_offset &&
-        lseek(fd, (off_t)entry->file_offset, SEEK_SET) < 0) {
-        ESP_LOGE(TAG, "%s 跳过拷贝机头失败（errno %d: %s）",
-                 entry->name, errno, strerror(errno));
-        close(fd);
-        free(rom);
-        return ESP_FAIL;
-    }
+    size_t chunk_size = 0;
+    if (entry->storage == ROM_STORAGE_ZIP_STORE ||
+        entry->storage == ROM_STORAGE_ZIP_DEFLATE) {
+        progress_emit("解压 ZIP", 10);
+        rom_zip_member_t member = {
+            .local_header_offset = entry->archive_offset,
+            .compressed_size = entry->stored_size,
+            .uncompressed_size = (uint32_t)source_size,
+            .crc32 = entry->archive_crc32,
+            .method = entry->storage == ROM_STORAGE_ZIP_STORE
+                    ? ROM_ZIP_METHOD_STORE : ROM_ZIP_METHOD_DEFLATE,
+        };
+        snprintf(member.name, sizeof(member.name), "%s", entry->name);
+        esp_err_t err = rom_zip_extract(entry->path, &member, rom, source_size,
+                                        scratch, scratch_size,
+                                        &chunk_size,
+                                        zip_load_progress, NULL);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "%s 从 ZIP 解压失败：%s", entry->name,
+                     esp_err_to_name(err));
+            free(rom);
+            return err;
+        }
+        if (entry->file_offset) {
+            memmove(rom, rom + entry->file_offset, entry->size);
+        }
+    } else {
+        progress_emit("读取 TF 卡", 0);
+        int fd = open(entry->path, O_RDONLY);
+        if (fd < 0) {
+            ESP_LOGE(TAG, "打不开 %s（errno %d: %s，卡被拔了？）",
+                     entry->path, errno, strerror(errno));
+            free(rom);
+            return ESP_ERR_NOT_FOUND;
+        }
+        if (entry->file_offset &&
+            lseek(fd, (off_t)entry->file_offset, SEEK_SET) < 0) {
+            ESP_LOGE(TAG, "%s 跳过拷贝机头失败（errno %d: %s）",
+                     entry->name, errno, strerror(errno));
+            close(fd);
+            free(rom);
+            return ESP_FAIL;
+        }
 
-    /* ⚠ 必须经内部 RAM 中转，不能让 read 直接写进 PSRAM。
-     * sdmmc_read_sectors() 看到目标不是 DMA-capable 就退化成一次一个 512 字节
-     * 扇区读 + memcpy（IDF 的 sdmmc_cmd.c）。本机实测单扇区 72 ms，4 MiB 这样
-     * 读要十分钟。中转之后走多扇区 DMA，实测 538 KB/s。 */
-    /* 这里故意用 POSIX open/read，不用 stdio fopen/fread。板上实测同一张卡裸读
-     * 64 KB 有 533 KB/s，但 fread 把 16 KB 的 DMA 缓冲拆成单扇区事务，1 MiB
-     * ROM 读了 84 秒（12 KB/s）；read 会把调用方缓冲直接交给 VFS/FatFs。
-     * 换成 read 后 16 KB 中转是 5.6 秒，SNES 提前读取拿到 32 KB 后是 3.3 秒。 */
-    /* 装载发生在 nes_emu_prealloc() 的 2x64 KB 和推屏条带 2x20 KB 之后，内部
-     * RAM 已经很紧，32 KB 连续块不一定拿得到。块越大越划算（固定开销被摊薄），
-     * 所以从大往小退，拿到多少算多少，实在不行退回直读 PSRAM 的慢路径。 */
-    size_t chunk_size = READ_CHUNK;
-    uint8_t *chunk = NULL;
-    while (chunk_size >= 4096) {
-        chunk = heap_caps_malloc(chunk_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-        if (chunk) break;
-        chunk_size /= 2;
-    }
-    if (!chunk) {
-        ESP_LOGW(TAG, "内部 RAM 拿不出 4 KB 反弹缓冲，退回直读 PSRAM —— "
-                      "会走单扇区路径，非常慢");
-    } else if (chunk_size != READ_CHUNK) {
-        ESP_LOGW(TAG, "反弹缓冲只拿到 %u KB（想要 %u KB），读盘会慢一些",
-                 (unsigned)(chunk_size / 1024), (unsigned)(READ_CHUNK / 1024));
-    }
-
-    size_t done = 0;
-    int read_errno = 0;
-    while (done < entry->size) {
-        size_t want = entry->size - done;
-        ssize_t got;
-        if (chunk) {
-            if (want > chunk_size) want = chunk_size;
-            got = read(fd, chunk, want);
-            if (got > 0) memcpy(rom + done, chunk, (size_t)got);
+        /* ⚠ 必须经内部 RAM 中转，不能让 read 直接写进 PSRAM。
+         * sdmmc_read_sectors() 看到目标不是 DMA-capable 就退化成一次一个 512 字节
+         * 扇区读 + memcpy（IDF 的 sdmmc_cmd.c）。本机实测单扇区 72 ms，4 MiB 这样
+         * 读要十分钟。中转之后走多扇区 DMA，实测 538 KB/s。 */
+        /* 这里故意用 POSIX open/read，不用 stdio fopen/fread。板上实测同一张卡裸读
+         * 64 KB 有 533 KB/s，但 fread 把 16 KB 的 DMA 缓冲拆成单扇区事务，1 MiB
+         * ROM 读了 84 秒（12 KB/s）；read 会把调用方缓冲直接交给 VFS/FatFs。
+         * 换成 read 后 16 KB 中转是 5.6 秒，SNES 提前读取拿到 32 KB 后是 3.3 秒。 */
+        /* 装载发生在 nes_emu_prealloc() 的 2x64 KB 和推屏条带 2x20 KB 之后，内部
+         * RAM 已经很紧，64 KB 连续块不一定拿得到。NES 会借出当前尚未给 PPU 使用的
+         * vidbuf，其余情况从大往小退，实在不行才退回直读 PSRAM 的慢路径。 */
+        chunk_size = READ_CHUNK;
+        uint8_t *chunk = NULL;
+        bool chunk_owned = false;
+        if (scratch && scratch_size >= 4096) {
+            chunk = scratch;
+            chunk_size = scratch_size > READ_CHUNK ? READ_CHUNK : scratch_size;
         } else {
-            got = read(fd, rom + done, want);
+            chunk_owned = true;
+            while (chunk_size >= 4096) {
+                chunk = heap_caps_malloc(chunk_size,
+                                         MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+                if (chunk) break;
+                chunk_size /= 2;
+            }
         }
-        if (got < 0) {
-            read_errno = errno;
-            break;
+        if (!chunk) {
+            ESP_LOGW(TAG, "内部 RAM 拿不出 4 KB 反弹缓冲，退回直读 PSRAM —— "
+                          "会走单扇区路径，非常慢");
+        } else if (chunk_size != READ_CHUNK) {
+            ESP_LOGW(TAG, "反弹缓冲只拿到 %u KB（想要 %u KB），读盘会慢一些",
+                     (unsigned)(chunk_size / 1024), (unsigned)(READ_CHUNK / 1024));
         }
-        if (got == 0) break;
-        done += (size_t)got;
-    }
-    free(chunk);
-    close(fd);
 
-    if (read_errno) {
-        ESP_LOGE(TAG, "%s 读取失败（errno %d: %s）",
-                 entry->name, read_errno, strerror(read_errno));
-        free(rom);
-        return ESP_FAIL;
-    }
+        size_t done = 0;
+        int read_errno = 0;
+        while (done < entry->size) {
+            size_t want = entry->size - done;
+            ssize_t got;
+            if (chunk) {
+                if (want > chunk_size) want = chunk_size;
+                got = read(fd, chunk, want);
+                if (got > 0) memcpy(rom + done, chunk, (size_t)got);
+            } else {
+                got = read(fd, rom + done, want);
+            }
+            if (got < 0) {
+                read_errno = errno;
+                break;
+            }
+            if (got == 0) break;
+            done += (size_t)got;
+            progress_emit("读取 TF 卡",
+                          (unsigned)(done * 95u / entry->size));
+        }
+        if (chunk_owned) free(chunk);
+        close(fd);
 
-    if (done != entry->size) {
-        ESP_LOGE(TAG, "%s 只读到 %u/%u 字节", entry->name,
-                 (unsigned)done, (unsigned)entry->size);
-        free(rom);
-        return ESP_ERR_INVALID_SIZE;
+        if (read_errno) {
+            ESP_LOGE(TAG, "%s 读取失败（errno %d: %s）",
+                     entry->name, read_errno, strerror(read_errno));
+            free(rom);
+            return ESP_FAIL;
+        }
+        if (done != entry->size) {
+            ESP_LOGE(TAG, "%s 只读到 %u/%u 字节", entry->name,
+                     (unsigned)done, (unsigned)entry->size);
+            free(rom);
+            return ESP_ERR_INVALID_SIZE;
+        }
     }
     if (extra_bytes) memset(rom + entry->size, 0, extra_bytes);
 
     /* 扫描期只看扩展名，所以这里是 ROM 头的**唯一**一道关：扩展名骗人的文件
      * （尤其通用的 .bin）会一路进到菜单，选中时在这里被挡下。 */
+    progress_emit("校验 ROM", 98);
     if (!rom_header_ok(entry->system, rom, entry->size)) {
         ESP_LOGE(TAG, "%s 的 ROM 头和扩展名对不上（%s），换个文件或改扩展名",
                  entry->name, entry->path);
@@ -545,8 +734,9 @@ esp_err_t rom_store_load(const rom_store_entry_t *entry, size_t extra_bytes,
     }
 
     int64_t ms = (esp_timer_get_time() - t0) / 1000;
-    ESP_LOGI(TAG, "%s 已从卡读入：%u KB，耗时 %lld ms（%u KB/s，%u KB 块）",
-             entry->name, (unsigned)(entry->size / 1024), (long long)ms,
+    const char *action = entry->storage == ROM_STORAGE_FILE ? "从卡读入" : "从 ZIP 解压";
+    ESP_LOGI(TAG, "%s 已%s：%u KB，耗时 %lld ms（%u KB/s，%u KB 块）",
+             entry->name, action, (unsigned)(entry->size / 1024), (long long)ms,
              (unsigned)(ms > 0 ? entry->size / 1024 * 1000 / (unsigned)ms : 0),
              (unsigned)(chunk_size / 1024));
 
@@ -554,7 +744,14 @@ esp_err_t rom_store_load(const rom_store_entry_t *entry, size_t extra_bytes,
     out->size = entry->size;
     out->crc32 = esp_crc32_le(0, rom, entry->size);
     out->owned = true;
+    progress_emit("准备启动", 100);
     return ESP_OK;
+}
+
+esp_err_t rom_store_load(const rom_store_entry_t *entry, size_t extra_bytes,
+                         rom_store_image_t *out)
+{
+    return rom_store_load_with_scratch(entry, extra_bytes, out, NULL, 0);
 }
 
 void rom_store_image_release(rom_store_image_t *image)

@@ -4,7 +4,8 @@ idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                             "gbc_emu.c" "snes_emu.c" "snes_save.c" "genesis_emu.c"
                             "rgb_led.c" "audio_output.c"
                             "input_serial.c" "input_gamepad.c" "input_usb.c"
-                            "rom_store.c" "rom_menu.c" "overclock.c" "sd_card.c"
+                            "rom_store.c" "rom_zip.c" "rom_menu.c" "loading_screen.c"
+                            "overclock.c" "sd_card.c"
                        INCLUDE_DIRS "."
                        REQUIRES nofrendo gnuboy snes9x gwenesis
                                 esp_lcd
@@ -18,6 +19,7 @@ idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                                 espressif__led_strip  # 板载可寻址 RGB LED
                                 esp_adc         # 摇杆走 ADC1
                                 esp_timer
+                                esp_rom        # ZIP DEFLATE 使用 ESP32-S3 ROM 内置 miniz
                                 esp_hw_support # ROM CRC 与存档文件 CRC
                                 fatfs          # TF 卡 + SMW 即时存档（后者底层自动带 wear levelling）
                                 spi_flash      # 提供 esp_flash.h

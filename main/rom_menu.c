@@ -66,8 +66,8 @@ static const char *TAG = "menu";
 #define HL_PAD         2       /* 反白块比文字左右各多出这么多 */
 #define LINE_CHARS_MAX ((DISP_FB_W - TEXT_X) / 6)
 
-/* rom_system_t 一共五个取值，所以分类最多五种。 */
-#define SYSTEM_COUNT   5
+/* 五个平台；无法从目录名推断平台的 ZIP 临时放第六类，选中后再识别。 */
+#define SYSTEM_COUNT   6
 
 #define POLL_MS     16      /* 约 60 Hz，和游戏帧率一个量级 */
 
@@ -103,6 +103,7 @@ typedef struct {
 /* 一律补到 4 字符宽：加了 SNES 之后名字列才还能对齐成一竖条。 */
 static const char *system_name(rom_system_t system)
 {
+    if (system == ROM_SYSTEM_ZIP) return "ZIP ";
     if (system == ROM_SYSTEM_SNES) return "SNES";
     if (system == ROM_SYSTEM_GENESIS) return "MD  ";
     if (system == ROM_SYSTEM_GBC) return "GBC ";
@@ -366,9 +367,14 @@ bool rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
                 if (e) {
                     *entry = e;
                     *launch_keys = now;
-                    printf("选中：[%s] %s（%u KB）\n  %s\n\n",
-                           system_name(e->system), e->name,
-                           (unsigned)(e->size / 1024), e->path);
+                    if (e->storage == ROM_STORAGE_ZIP_PENDING) {
+                        printf("选中：[%s] %s（ZIP，按需识别）\n  %s\n\n",
+                               system_name(e->system), e->name, e->path);
+                    } else {
+                        printf("选中：[%s] %s（%u KB）\n  %s\n\n",
+                               system_name(e->system), e->name,
+                               (unsigned)(e->size / 1024), e->path);
+                    }
                     return true;
                 }
 
