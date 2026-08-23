@@ -7,8 +7,9 @@
  *
  * 早期是从 flash 的 roms 分区 mmap 一整块打包镜像，entry->data 直接是 flash 指针，
  * 零拷贝。换到 SD 之后这个模型不成立了 —— 文件系统没法 mmap，字节必须显式读出来。
- * 所以现在 entry 里存路径，代价是每次开游戏多一次全量读盘（4 MiB 的 SNES 卡带
- * 约 3~4 秒），换来的是容量从 13 MB 变成整张卡、加游戏不用重烧固件。
+ * 所以现在 entry 里存路径，代价是每次开游戏多一次全量读盘（本机 EZSD1 实测
+ * 1 MiB 约 3.3 秒，4 MiB 按吞吐量约 13 秒），换来的是容量从 13 MB 变成整张卡、
+ * 加游戏不用重烧固件。
  *
  * ⚠ 扫描时**不打开任何文件**，平台只按扩展名定、大小只按 stat 取。这不是偷懒，
  * 是实测逼出来的：这张卡每条 SD 命令有约 40 ms 的固定就绪等待（无数据的 CMD13
@@ -25,6 +26,7 @@
  */
 
 #include <dirent.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -446,24 +448,30 @@ esp_err_t rom_store_load(const rom_store_entry_t *entry, size_t extra_bytes,
     }
 
     int64_t t0 = esp_timer_get_time();
-    FILE *fp = fopen(entry->path, "rb");
-    if (!fp) {
-        ESP_LOGE(TAG, "打不开 %s（卡被拔了？）", entry->path);
+    int fd = open(entry->path, O_RDONLY);
+    if (fd < 0) {
+        ESP_LOGE(TAG, "打不开 %s（errno %d: %s，卡被拔了？）",
+                 entry->path, errno, strerror(errno));
         free(rom);
         return ESP_ERR_NOT_FOUND;
     }
     if (entry->file_offset &&
-        fseek(fp, (long)entry->file_offset, SEEK_SET) != 0) {
-        ESP_LOGE(TAG, "%s 跳过拷贝机头失败", entry->name);
-        fclose(fp);
+        lseek(fd, (off_t)entry->file_offset, SEEK_SET) < 0) {
+        ESP_LOGE(TAG, "%s 跳过拷贝机头失败（errno %d: %s）",
+                 entry->name, errno, strerror(errno));
+        close(fd);
         free(rom);
         return ESP_FAIL;
     }
 
-    /* ⚠ 必须经内部 RAM 中转，不能让 fread 直接写进 PSRAM。
+    /* ⚠ 必须经内部 RAM 中转，不能让 read 直接写进 PSRAM。
      * sdmmc_read_sectors() 看到目标不是 DMA-capable 就退化成一次一个 512 字节
      * 扇区读 + memcpy（IDF 的 sdmmc_cmd.c）。本机实测单扇区 72 ms，4 MiB 这样
      * 读要十分钟。中转之后走多扇区 DMA，实测 538 KB/s。 */
+    /* 这里故意用 POSIX open/read，不用 stdio fopen/fread。板上实测同一张卡裸读
+     * 64 KB 有 533 KB/s，但 fread 把 16 KB 的 DMA 缓冲拆成单扇区事务，1 MiB
+     * ROM 读了 84 秒（12 KB/s）；read 会把调用方缓冲直接交给 VFS/FatFs。
+     * 换成 read 后 16 KB 中转是 5.6 秒，SNES 提前读取拿到 32 KB 后是 3.3 秒。 */
     /* 装载发生在 nes_emu_prealloc() 的 2x64 KB 和推屏条带 2x20 KB 之后，内部
      * RAM 已经很紧，32 KB 连续块不一定拿得到。块越大越划算（固定开销被摊薄），
      * 所以从大往小退，拿到多少算多少，实在不行退回直读 PSRAM 的慢路径。 */
@@ -483,21 +491,33 @@ esp_err_t rom_store_load(const rom_store_entry_t *entry, size_t extra_bytes,
     }
 
     size_t done = 0;
+    int read_errno = 0;
     while (done < entry->size) {
         size_t want = entry->size - done;
-        size_t got;
+        ssize_t got;
         if (chunk) {
             if (want > chunk_size) want = chunk_size;
-            got = fread(chunk, 1, want, fp);
-            if (got) memcpy(rom + done, chunk, got);
+            got = read(fd, chunk, want);
+            if (got > 0) memcpy(rom + done, chunk, (size_t)got);
         } else {
-            got = fread(rom + done, 1, want, fp);
+            got = read(fd, rom + done, want);
+        }
+        if (got < 0) {
+            read_errno = errno;
+            break;
         }
         if (got == 0) break;
-        done += got;
+        done += (size_t)got;
     }
     free(chunk);
-    fclose(fp);
+    close(fd);
+
+    if (read_errno) {
+        ESP_LOGE(TAG, "%s 读取失败（errno %d: %s）",
+                 entry->name, read_errno, strerror(read_errno));
+        free(rom);
+        return ESP_FAIL;
+    }
 
     if (done != entry->size) {
         ESP_LOGE(TAG, "%s 只读到 %u/%u 字节", entry->name,

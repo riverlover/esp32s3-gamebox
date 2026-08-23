@@ -487,7 +487,32 @@ esp_err_t snes_emu_run(const rom_store_entry_t *entry, uint16_t launch_keys)
      * 不这么做就只能落 PSRAM（实测那样渲染慢一倍多）。 */
     nes_emu_release_prealloc();
 
-    esp_err_t err = alloc_buffers();
+    /* 这一组取值照抄 retro-go main_snes.c，都是 SNES 时序常量，不是可调参数。 */
+    Settings.CyclesPercentage   = 100;
+    Settings.H_Max              = SNES_CYCLES_PER_SCANLINE;
+    Settings.FrameTimePAL       = 20000;
+    Settings.FrameTimeNTSC      = 16667;
+    Settings.ControllerOption   = SNES_JOYPAD;
+    Settings.HBlankStart        = (256 * Settings.H_Max) / SNES_HCOUNTER_MAX;
+    Settings.SoundPlaybackRate  = AUDIO_OUTPUT_SAMPLE_RATE;
+    Settings.SoundInputRate     = AUDIO_OUTPUT_SAMPLE_RATE;
+    Settings.DisableSoundEcho   = false;
+    Settings.InterpolatedSound  = true;
+
+    /* retro-go 也是先建 Snes9x 内存、最后才 LoadROM。这里再把 ROM 读取提前到
+     * 显示/音频缓冲之前：119 KB 内部帧缓冲若先占住，SD 中转只能拿到 16 KB；
+     * 同一张卡实测 1 MiB 要 5.6 秒。ROM 先读时能拿 32 KB，实测降到 3.3 秒；
+     * 中转释放后帧缓冲仍能回到内部 SRAM，不牺牲模拟性能。 */
+    if (!S9xInitMemory()) { ESP_LOGE(TAG, "内存初始化失败"); return ESP_ERR_NO_MEM; }
+    uint32_t rom_crc = 0;
+    esp_err_t err = install_rom(entry, &rom_crc);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ROM 拷入 PSRAM 失败（需要 %u KB）",
+                 (unsigned)((entry->size + SNES_ROM_SLACK) / 1024));
+        return err;
+    }
+
+    err = alloc_buffers();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "SNES 缓冲分配失败：需要 2x%d KB 帧缓冲 + %d 字节音频缓冲",
                  SNES_FB_BYTES / 1024, SNES_AUDIO_MAX_FRAMES * 4);
@@ -501,20 +526,7 @@ esp_err_t snes_emu_run(const rom_store_entry_t *entry, uint16_t launch_keys)
                  esp_err_to_name(audio_err));
     }
 
-    /* 这一组取值照抄 retro-go main_snes.c，都是 SNES 时序常量，不是可调参数。 */
-    Settings.CyclesPercentage   = 100;
-    Settings.H_Max              = SNES_CYCLES_PER_SCANLINE;
-    Settings.FrameTimePAL       = 20000;
-    Settings.FrameTimeNTSC      = 16667;
-    Settings.ControllerOption   = SNES_JOYPAD;
-    Settings.HBlankStart        = (256 * Settings.H_Max) / SNES_HCOUNTER_MAX;
-    Settings.SoundPlaybackRate  = AUDIO_OUTPUT_SAMPLE_RATE;
-    Settings.SoundInputRate     = AUDIO_OUTPUT_SAMPLE_RATE;
-    Settings.DisableSoundEcho   = false;
-    Settings.InterpolatedSound  = true;
-
     if (!S9xInitDisplay())  { ESP_LOGE(TAG, "显示初始化失败");   return ESP_ERR_NO_MEM; }
-    if (!S9xInitMemory())   { ESP_LOGE(TAG, "内存初始化失败");   return ESP_ERR_NO_MEM; }
     if (!S9xInitAPU())      { ESP_LOGE(TAG, "APU 初始化失败");   return ESP_FAIL; }
     if (!S9xInitSound(0, 0)){ ESP_LOGE(TAG, "声音初始化失败");   return ESP_FAIL; }
     if (!S9xInitGFX())      { ESP_LOGE(TAG, "图形初始化失败");   return ESP_FAIL; }
@@ -523,13 +535,6 @@ esp_err_t snes_emu_run(const rom_store_entry_t *entry, uint16_t launch_keys)
     relocate_wram_internal();
 #endif
 
-    uint32_t rom_crc = 0;
-    err = install_rom(entry, &rom_crc);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "ROM 拷入 PSRAM 失败（需要 %u KB）",
-                 (unsigned)((entry->size + SNES_ROM_SLACK) / 1024));
-        return err;
-    }
     if (!LoadROM(NULL)) {
         ESP_LOGE(TAG, "ROM 解析失败（不是受支持的 SNES 卡带？）");
         return ESP_FAIL;

@@ -119,11 +119,14 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
   代价：扩展名骗人的文件（尤其通用的 `.bin`）会进到菜单，选中时才报错。
 - GB / GBC 按扩展名分**只影响菜单分组**：`gbc_emu.c` 根本不读 `entry->system`，
   gnuboy 自己从 ROM 头 0x143 判 CGB/SGB/DMG（`gnuboy.c:234`）。
-- ⚠️ **`rom_store_load()` 必须经内部 RAM 反弹缓冲**，不能让 `fread` 直接写 PSRAM。
+- ⚠️ **`rom_store_load()` 必须经内部 RAM 反弹缓冲，并用 POSIX `open/read`**，不能让
+  stdio `fread` 或 FatFs 直接写 PSRAM。
   `sdmmc_read_sectors()` 发现目标不是 DMA-capable 就退化成一次一个 512 字节扇区
   读 + memcpy（IDF 的 `sdmmc_cmd.c`）。本机单扇区读 72 ms —— 4 MiB 卡带这样读要
-  十分钟。中转之后走多扇区 DMA。缓冲按 32→16→8→4 KB 梯度回退，因为装载时
-  内部 RAM 已经被 `nes_emu_prealloc` 和 SNES 帧缓冲吃掉大半。
+  十分钟。即使有内部中转，`fread` 仍会把读请求拆碎：同一个 1 MiB ROM 实测
+  84 秒 / 12 KB/s；换 `read` 后 16 KB 中转为 5.6 秒。中转缓冲按 32→16→8→4 KB
+  梯度回退。SNES 特意在 119 KB 内部帧缓冲之前装 ROM，能拿到 32 KB 中转，实测
+  同一文件 3.3 秒 / 312 KB/s；装完释放中转，再分帧缓冲，二者不抢内部 SRAM。
 - SNES 的 512 字节拷贝机头只从文件大小就能判出来（整卡带都是 `0x400` 的整数倍），
   不用开文件。`rom_store_load(entry, extra_bytes, ...)` 仍然直接读进最终可写缓冲，
   不能先读一份再复制 4 MiB。
