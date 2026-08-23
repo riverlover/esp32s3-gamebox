@@ -194,3 +194,8 @@ void display_pixel(int x, int y, uint16_t color);
 
 /* UTF-8 文字：ASCII 用 5x7，菜单所需汉字用 16x16 子集；scale 为整数倍放大。 */
 void display_text(int x, int y, const char *s, uint16_t color, int scale);
+
+/* 菜单/加载页的同高字体：ASCII 用 Unifont 8x16 半角，中文用 16x16 全角。
+ * 两种字形基线和高度一致；宽度函数与绘制使用完全相同的 UTF-8/fallback 规则。 */
+void display_text_16(int x, int y, const char *s, uint16_t color);
+int display_text_width_16(const char *s);

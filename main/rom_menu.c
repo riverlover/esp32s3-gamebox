@@ -58,13 +58,11 @@ static const char *TAG = "menu";
 #define FOOTER_LINE_Y  204
 #define FOOTER_Y       207
 #define TEXT_X         8       /* 文字左缩进 */
-/* 声音/亮度两个指示器紧挨着排在标题行右侧，右边仍要给页码（"d/d"，18px）
- * 留空间。中文字形 17px/字，数字 6px/字，两个指示器最长都是 "X度:100"
- * 那种 4 字 58px，中间留 6px 间距，算下来 BRIGHT_X 结尾正好卡在页码前。 */
-#define SOUND_X        136
-#define BRIGHT_X       200
+/* 同高字体里中文步进 17px、ASCII 步进 9px。分类页标题后依次放声音/亮度；
+ * 游戏页没有声音，亮度结尾停在 224px，右侧仍放得下最长 5 字符页码。 */
+#define SOUND_X        82
+#define BRIGHT_X       154
 #define HL_PAD         2       /* 反白块比文字左右各多出这么多 */
-#define LINE_CHARS_MAX ((DISP_FB_W - TEXT_X) / 6)
 
 /* 五个平台；无法从目录名推断平台的 ZIP 临时放第六类，选中后再识别。 */
 #define SYSTEM_COUNT   6
@@ -111,19 +109,6 @@ static const char *system_name(rom_system_t system)
     return "NES ";
 }
 
-/* 按 display_text 的步进量算像素宽度：汉字 17px、ASCII 6px（见 display.c
- * 末尾那两行 cx += ）。菜单文本只有这两类，够用。有了它页脚才能居中——
- * 两页的页脚长度不一样，像以前那样把 x 写死成 38 的话短的那条会偏左。 */
-static int text_width(const char *s)
-{
-    int w = 0;
-    for (const unsigned char *p = (const unsigned char *)s; *p; ) {
-        if ((*p & 0xF0) == 0xE0) { w += 17; p += 3; }    /* BMP 汉字 */
-        else                     { w += 6;  p += 1; }
-    }
-    return w;
-}
-
 static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
     const draw_args_t *a = ctx;
@@ -134,24 +119,24 @@ static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
      * 背景上对比度太弱，会糊。 */
     display_clear(C_GB0);
 
-    display_text(TEXT_X, TITLE_Y, a->title, C_GB3, 1);
+    display_text_16(TEXT_X, TITLE_Y, a->title, C_GB3);
 
     if (a->show_volume) {
         char vol_text[16];
         snprintf(vol_text, sizeof(vol_text), "声音:%d", a->volume);
-        display_text(SOUND_X, PAGE_Y, vol_text, C_GB2, 1);
+        display_text_16(SOUND_X, PAGE_Y, vol_text, C_GB2);
     }
     char bl_text[16];
     snprintf(bl_text, sizeof(bl_text), "亮度:%d", a->backlight);
-    display_text(BRIGHT_X, PAGE_Y, bl_text, C_GB2, 1);
+    display_text_16(BRIGHT_X, PAGE_Y, bl_text, C_GB2);
 
     /* 只有一页就不画页码：分类页永远是 "1/1"，写出来只是噪声。 */
     if (a->page_count > 1) {
         char page_text[32];
         snprintf(page_text, sizeof(page_text), "%d/%d",
                  a->page + 1, a->page_count);
-        int page_x = DISP_FB_W - TEXT_X - (int)strlen(page_text) * 6;
-        display_text(page_x, PAGE_Y, page_text, C_GB3, 1);
+        int page_x = DISP_FB_W - TEXT_X - display_text_width_16(page_text);
+        display_text_16(page_x, PAGE_Y, page_text, C_GB3);
     }
     display_fill_rect(TEXT_X, HEADER_LINE_Y, DISP_FB_W - 2 * TEXT_X, 1,
                       C_GB2);
@@ -167,16 +152,16 @@ static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
             display_fill_rect(TEXT_X - HL_PAD, y - 1,
                               DISP_FB_W - 2 * (TEXT_X - HL_PAD), ROW_H - 1,
                               C_GB2);
-            display_text(TEXT_X, y, line, C_GB0, 1);
+            display_text_16(TEXT_X, y, line, C_GB0);
         } else {
-            display_text(TEXT_X, y, line, C_GB2, 1);
+            display_text_16(TEXT_X, y, line, C_GB2);
         }
     }
 
     display_fill_rect(TEXT_X, FOOTER_LINE_Y, DISP_FB_W - 2 * TEXT_X, 1,
                       C_GB2);
-    display_text((DISP_FB_W - text_width(a->footer)) / 2, FOOTER_Y,
-                 a->footer, C_GB2, 1);
+    display_text_16((DISP_FB_W - display_text_width_16(a->footer)) / 2, FOOTER_Y,
+                    a->footer, C_GB2);
 }
 
 /* 统计每个平台各有多少游戏，返回分类数。
@@ -268,7 +253,6 @@ static void draw_games(int count, const category_t *cat, int sel)
          * 一路数下去反而看不出这是第几个。 */
         char *line = a.lines[j - first];
         snprintf(line, sizeof(a.lines[0]), "%02d %s", j + 1, e->name);
-        line[LINE_CHARS_MAX] = '\0';
     }
     display_stream_sync(draw_strip, &a);
 }

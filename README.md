@@ -494,8 +494,8 @@ NES 画面对不上的组合），以及 `display.c` 的 `BAND_LINES`（最好�
 | `snes9x/` | retro-go → libretro/snes9x2005 | `src/LICENSE` 是拼接的：前半 ndssfc 为 GPL v2+，后半是 Snes9x 自有许可 | 见下 |
 | `gwenesis/` | retro-go | 目录 `LICENSE` 是 **AGPL v3** | ⚠ 各源码文件头写的是 **GPL v3 or later**，与目录 LICENSE 不一致 |
 
-`main/menu_font.c` 的字形来自 GNU Unifont 17.0.04（SIL OFL 1.1，或 GPL v2+ 带
-字体嵌入例外），没有许可问题。
+菜单里的 8×16 半角英文和 16×16 全角中文都来自 GNU Unifont 17.0.04，字高和
+基线一致。该字体采用 SIL OFL 1.1，或 GPL v2+ 带字体嵌入例外，没有许可问题。
 
 ### ⚠ 为什么本仓库不分发构建产物
 

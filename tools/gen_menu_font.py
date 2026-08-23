@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从 GNU Unifont .hex(.gz) 生成菜单用的 16x16 中文字形表（GB2312 全集）。
+"""从 GNU Unifont .hex(.gz) 生成菜单用的 8x16 ASCII + 16x16 中文字形表。
 
 字形来自 GNU Unifont 17.0.04；Unifont 采用 SIL OFL 1.1，或 GPL v2+
 （带字体嵌入例外）。
@@ -44,8 +44,12 @@ EXTRA_TEXT = ""
 
 
 def read_hex(path):
-    wanted = gb2312_codepoints() | {ord(ch) for ch in EXTRA_TEXT if ord(ch) > 0x7F}
-    found = {}
+    wanted_wide = gb2312_codepoints() | {
+        ord(ch) for ch in EXTRA_TEXT if ord(ch) > 0x7F
+    }
+    wanted_ascii = set(range(0x20, 0x7F))
+    found_wide = {}
+    found_ascii = {}
     opener = gzip.open if str(path).endswith(".gz") else open
     with opener(path, "rt", encoding="ascii") as fh:
         for line in fh:
@@ -53,23 +57,27 @@ def read_hex(path):
             if not sep:
                 continue
             codepoint = int(code_hex, 16)
-            if codepoint not in wanted:
+            if codepoint not in wanted_wide and codepoint not in wanted_ascii:
                 continue
             bitmap = bytes.fromhex(bitmap_hex)
-            if len(bitmap) != 32:
+            expected = 16 if codepoint in wanted_ascii else 32
+            if len(bitmap) != expected:
                 raise SystemExit(
-                    "U+%04X 不是 16x16 字形（%d 字节）" %
-                    (codepoint, len(bitmap)))
-            found[codepoint] = bitmap
+                    "U+%04X 字形应为 %d 字节，实际 %d 字节" %
+                    (codepoint, expected, len(bitmap)))
+            if codepoint in wanted_ascii:
+                found_ascii[codepoint] = bitmap
+            else:
+                found_wide[codepoint] = bitmap
 
-    missing = wanted - found.keys()
+    missing = (wanted_wide - found_wide.keys()) | (wanted_ascii - found_ascii.keys())
     if missing:
         raise SystemExit("缺少字形: " + " ".join("U+%04X" % cp
                                                 for cp in sorted(missing)))
-    return found
+    return found_ascii, found_wide
 
 
-def render(glyphs):
+def render(ascii_glyphs, wide_glyphs):
     lines = [
         "/* 此文件由 tools/gen_menu_font.py 生成，不要手改。",
         " * 字形来自 GNU Unifont 17.0.04：SIL OFL 1.1，或 GPL v2+ 字体嵌入例外。 */",
@@ -81,14 +89,28 @@ def render(glyphs):
         "    uint8_t bitmap[32];     /* 16 行，每行高位在左 */",
         "} menu_glyph_t;",
         "",
+        "static const uint8_t ASCII_GLYPHS[95][16] = {",
+    ]
+    for codepoint, bitmap in sorted(ascii_glyphs.items()):
+        values = ", ".join("0x%02X" % b for b in bitmap)
+        lines.append("    { %s }, /* %s */" % (values, chr(codepoint)))
+    lines += [
+        "};",
+        "",
         "static const menu_glyph_t GLYPHS[] = {",
     ]
-    for codepoint, bitmap in sorted(glyphs.items()):
+    for codepoint, bitmap in sorted(wide_glyphs.items()):
         values = ", ".join("0x%02X" % b for b in bitmap)
         lines.append("    { 0x%04X, { %s } }, /* %s */" %
                      (codepoint, values, chr(codepoint)))
     lines += [
         "};",
+        "",
+        "const uint8_t *menu_font_ascii_glyph(uint32_t codepoint)",
+        "{",
+        "    if (codepoint < 0x20 || codepoint > 0x7E) codepoint = '?';",
+        "    return ASCII_GLYPHS[codepoint - 0x20];",
+        "}",
         "",
         "const uint8_t *menu_font_glyph(uint32_t codepoint)",
         "{",
@@ -111,12 +133,14 @@ def render(glyphs):
 def main():
     if len(sys.argv) != 3:
         raise SystemExit(__doc__)
-    glyphs = read_hex(Path(sys.argv[1]))
+    ascii_glyphs, wide_glyphs = read_hex(Path(sys.argv[1]))
     output = Path(sys.argv[2])
-    output.write_text(render(glyphs), encoding="utf-8")
-    print("生成 %d 个中文点阵字形 -> %s (%.0f KB 源码，固件里约 %.0f KB)"
-          % (len(glyphs), output, output.stat().st_size / 1024,
-             len(glyphs) * 34 / 1024))
+    output.write_text(render(ascii_glyphs, wide_glyphs), encoding="utf-8")
+    print("生成 %d 个 ASCII + %d 个中文点阵字形 -> %s "
+          "(%.0f KB 源码，固件里约 %.0f KB)"
+          % (len(ascii_glyphs), len(wide_glyphs), output,
+             output.stat().st_size / 1024,
+             (len(ascii_glyphs) * 16 + len(wide_glyphs) * 34) / 1024))
 
 
 if __name__ == "__main__":

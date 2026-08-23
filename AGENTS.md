@@ -186,7 +186,7 @@ GPLv2-**only**（源文件无 or later）而 gwenesis 是 GPL v3+/AGPL v3，两�
 | `partitions.csv` 的 roms offset | 顶层 `CMakeLists.txt` 的 `ROMS_OFFSET` |
 | `pack_roms.py` 的 `NAME_LEN` | `rom_store.h` 的 `ROM_STORE_NAME_LEN` |
 | 加 `main/roms/*.nes` | `main/CMakeLists.txt` 的 `EMBED_FILES` + `nes_emu.c` 的 `ROM_CHOICE` 分支和 `_binary_<名字>_nes_start` 符号名（非字母数字→下划线） |
-| 菜单要显示新汉字 | 不用管了：`main/menu_font.c` 收了 GB2312 全部 6763 字。真撞上 GB2312 之外的字（繁体、假名）才需要往 `tools/gen_menu_font.py` 的 `EXTRA_TEXT` 加一个字并重跑（要 unifont 源文件，不入库） |
+| 菜单要显示新汉字 | 不用管了：`main/menu_font.c` 收了 Unifont 的 95 个 8x16 ASCII 和 GB2312 全部 6763 个 16x16 汉字。真撞上 GB2312 之外的字（繁体、假名）才需要往 `tools/gen_menu_font.py` 的 `EXTRA_TEXT` 加一个字并重跑（要 unifont 源文件，不入库） |
 | `main/` 新增 .c 或用新驱动 | `main/CMakeLists.txt` 的 `SRCS` 和 `REQUIRES`（显式写了 REQUIRES 就不再自动依赖全部组件） |
 
 ## 硬件排障的教训

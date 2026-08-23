@@ -39,21 +39,6 @@ static char s_stage[32];
 static unsigned s_last_percent;
 static bool s_started;
 
-static int text_width(const char *s)
-{
-    int width = 0;
-    for (const unsigned char *p = (const unsigned char *)s; *p; ) {
-        if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) {
-            width += 17;
-            p += 3;
-        } else {
-            width += 6;
-            p++;
-        }
-    }
-    return width;
-}
-
 /* 按屏幕像素宽度截断，不在 UTF-8 汉字中间下刀。菜单名字已经去掉区域标记，
  * 这里再做最后一道边界保护，避免长文件名顶出画布。 */
 static void copy_fitted(char *dst, size_t dst_size, const char *src, int max_width)
@@ -63,7 +48,7 @@ static void copy_fitted(char *dst, size_t dst_size, const char *src, int max_wid
     const unsigned char *p = (const unsigned char *)(src ? src : "");
     while (*p && out + 1 < dst_size) {
         size_t bytes = ((*p & 0xF0) == 0xE0 && p[1] && p[2]) ? 3 : 1;
-        int glyph_width = bytes == 3 ? 17 : 6;
+        int glyph_width = bytes == 3 ? 17 : 9;
         if (width + glyph_width > max_width || out + bytes >= dst_size) break;
         memcpy(dst + out, p, bytes);
         out += bytes;
@@ -81,13 +66,13 @@ static void loading_strip(uint16_t *strip, int y0, int h, void *ctx)
     (void)h;
 
     display_clear(C_GB0);
-    display_text(TEXT_X, TITLE_Y, a->error ? "加载失败" : "正在加载", C_GB3, 1);
+    display_text_16(TEXT_X, TITLE_Y, a->error ? "加载失败" : "正在加载", C_GB3);
 
-    int name_x = (DISP_FB_W - text_width(a->name)) / 2;
+    int name_x = (DISP_FB_W - display_text_width_16(a->name)) / 2;
     if (name_x < TEXT_X) name_x = TEXT_X;
-    display_text(name_x, NAME_Y, a->name, C_GB2, 1);
+    display_text_16(name_x, NAME_Y, a->name, C_GB2);
 
-    display_text(TEXT_X, STAGE_Y, a->stage, a->error ? C_RED : C_GB2, 1);
+    display_text_16(TEXT_X, STAGE_Y, a->stage, a->error ? C_RED : C_GB2);
     display_rect(BAR_X, BAR_Y, BAR_W, BAR_H, C_GB2);
     int fill = (BAR_W - 4) * (int)a->percent / 100;
     if (fill > 0) {
@@ -97,10 +82,10 @@ static void loading_strip(uint16_t *strip, int y0, int h, void *ctx)
 
     char percent[8];
     snprintf(percent, sizeof(percent), "%u%%", a->percent);
-    display_text((DISP_FB_W - text_width(percent)) / 2, PERCENT_Y,
-                 percent, a->error ? C_RED : C_GB3, 1);
-    display_text((DISP_FB_W - text_width("请勿拔出 TF 卡")) / 2, FOOTER_Y,
-                 "请勿拔出 TF 卡", C_GB2, 1);
+    display_text_16((DISP_FB_W - display_text_width_16(percent)) / 2, PERCENT_Y,
+                    percent, a->error ? C_RED : C_GB3);
+    display_text_16((DISP_FB_W - display_text_width_16("请勿拔出 TF 卡")) / 2,
+                    FOOTER_Y, "请勿拔出 TF 卡", C_GB2);
 }
 
 static void render(bool error, unsigned percent)

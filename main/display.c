@@ -536,3 +536,46 @@ void display_text(int x, int y, const char *s, uint16_t color, int scale)
         cx += 6 * scale;    /* 5 列字形 + 1 列间距 */
     }
 }
+
+void display_text_16(int x, int y, const char *s, uint16_t color)
+{
+    int cx = x;
+    while (*s) {
+        uint32_t codepoint = utf8_next(&s);
+        const uint8_t *han = codepoint > 0x7E ? menu_font_glyph(codepoint) : NULL;
+
+        if (han) {
+            for (int row = 0; row < 16; row++) {
+                uint16_t bits = ((uint16_t)han[row * 2] << 8) | han[row * 2 + 1];
+                for (int col = 0; col < 16; col++) {
+                    if (bits & (0x8000u >> col)) {
+                        display_pixel(cx + col, y + row, color);
+                    }
+                }
+            }
+            cx += 17;       /* 16px 全角 + 1px 字距 */
+            continue;
+        }
+
+        const uint8_t *ascii = menu_font_ascii_glyph(codepoint);
+        for (int row = 0; row < 16; row++) {
+            uint8_t bits = ascii[row];
+            for (int col = 0; col < 8; col++) {
+                if (bits & (0x80u >> col)) {
+                    display_pixel(cx + col, y + row, color);
+                }
+            }
+        }
+        cx += 9;            /* 8px 半角 + 1px 字距 */
+    }
+}
+
+int display_text_width_16(const char *s)
+{
+    int width = 0;
+    while (*s) {
+        uint32_t codepoint = utf8_next(&s);
+        width += codepoint > 0x7E && menu_font_glyph(codepoint) ? 17 : 9;
+    }
+    return width;
+}
