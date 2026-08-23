@@ -16,10 +16,6 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-/* 目录里最多认这么多个游戏。卡上超出的部分会被忽略并打一行提示 ——
- * 这道上限同时限制了目录本身占的 PSRAM（见 rom_store.c 的 s_pool）。 */
-#define ROM_STORE_MAX      256
-
 /* 显示名的缓冲长度（含结尾 NUL）。菜单一行最多也就显示三十几个字符，
  * 名字太长会被截断。 */
 #define ROM_STORE_NAME_LEN 48
@@ -71,10 +67,11 @@ typedef struct {
 typedef void (*rom_store_progress_fn)(const char *stage, unsigned percent);
 void rom_store_set_progress_callback(rom_store_progress_fn callback);
 
-/* 挂卡并扫描。返回认到的游戏数，0 表示没有可玩的（没插卡、卡挂不上、
+/* 挂卡并建立目录。默认优先读取卡根目录的持久缓存；force_refresh 为 true 时
+ * 忽略缓存、完整扫描并重写缓存。返回 0 表示没有可玩的（没插卡、卡挂不上、
  * 或者卡上一个合法 ROM 都没有）—— 调用方应当回退到编译期嵌入的那个 ROM。
  * 可以反复调用，只有第一次真的做事。 */
-int rom_store_init(void);
+int rom_store_init(bool force_refresh);
 
 /* 第 i 个游戏（0 <= i < rom_store_init() 的返回值）。越界返回 NULL。
  * 返回的指针在整个运行期间有效。 */

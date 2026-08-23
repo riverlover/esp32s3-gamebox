@@ -15,8 +15,14 @@
  * 是实测逼出来的：这张卡每条 SD 命令有约 40 ms 的固定就绪等待。原来每个文件都
  * open+读头+seek，39 个游戏要扫 14 秒；纯 readdir+stat 之后只要几秒。ZIP 连 stat
  * 也跳过，路径含 nes/gb/gbc/snes/md 时先按目录分组，否则临时放进 ZIP 分类；选中
- * 后再识别。当前 EZSD1 卡扫到 256 项上限两次实测 2.39～5.52 秒。ROM 头统一挪到
- * 装载时再验。
+ * 后再识别。旧版扫到 256 项就停时实测 2.39～5.52 秒；取消人为上限后，这张
+ * EZSD1 卡完整收录 971 项实测 30.83 秒。多出来的是遍历全部目录的固定命令等待，
+ * ZIP 仍然一个都没打开。ROM 头统一挪到装载时再验。
+ *
+ * 完整扫描后会把已经排好序的目录写进 /sd/.gamebox-rom-index。后续启动只顺序读
+ * 这一份小文件，不再对近千个目录项逐个发 SD 命令。缓存有格式版本和 CRC，写入
+ * 走临时文件 + 备份改名；缓存缺失或损坏都自动回退扫描。代价是加删游戏后要在
+ * 开机时按住 SELECT 主动刷新，避免为了自动比对又把整棵目录走一遍。
  *
  * GB / GBC 靠扩展名分不准，但**这只影响菜单分组**：gbc_emu.c 根本不读
  * entry->system，gnuboy 自己从 ROM 头 0x143 判 CGB/SGB/DMG（gnuboy.c:234）。
@@ -28,6 +34,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,13 +95,40 @@ static int     s_n_stat;
 #define SNES_HIROM_HEADER 0xFFC0
 #define GENESIS_ROM_MIN_SIZE 0x200
 
+/* 持久目录只缓存扫描期能得到的元数据，不缓存任何 ROM 内容。格式故意不用
+ * rom_store_entry_t：里面有指针和 size_t，直接落盘会绑定本次地址和 ABI。 */
+#define ROM_INDEX_PATH        SD_MOUNT_POINT "/.gamebox-rom-index"
+#define ROM_INDEX_TEMP_PATH   SD_MOUNT_POINT "/.gamebox-rom-index.tmp"
+#define ROM_INDEX_BACKUP_PATH SD_MOUNT_POINT "/.gamebox-rom-index.bak"
+#define ROM_INDEX_MAGIC       UINT32_C(0x58494247) /* 小端文件里是 "GBIX" */
+#define ROM_INDEX_VERSION     1
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t header_size;
+    uint32_t entry_count;
+    uint32_t payload_size;
+    uint32_t payload_crc32;
+} rom_index_header_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t size;
+    uint32_t file_offset;
+    uint32_t archive_offset;
+    uint32_t stored_size;
+    uint32_t archive_crc32;
+    uint16_t name_len;
+    uint16_t path_len;
+    uint8_t  storage;
+    uint8_t  system;
+    uint16_t reserved;
+} rom_index_record_t;
+
 static rom_store_entry_t *s_entries;
 static int s_count = -1;          /* -1 = 还没扫过 */
-
-/* 名字和路径都从这块 PSRAM 池里切，避免每条目一次 malloc。 */
-static char  *s_pool;
-static size_t s_pool_used;
-static size_t s_pool_size;
+static size_t s_capacity;
+static bool s_scan_out_of_memory;
 static rom_store_progress_fn s_progress;
 
 void rom_store_set_progress_callback(rom_store_progress_fn callback)
@@ -112,14 +146,75 @@ static void progress_emit(const char *stage, unsigned percent)
  * 扫描是单线程的，共用没有竞争。 */
 static char    s_path[ROM_STORE_PATH_LEN];
 
-static char *pool_dup(const char *src, size_t len)
+/* 目录项没有人为数量上限。数组在 PSRAM 里按 128、256、512... 倍增；扩容只
+ * 发生在开机扫描期间，那时还没有任何调用方持有 entry 指针。字符串单独做一块
+ * 精确分配，数组 realloc 后 name/path 指针仍然有效。 */
+static bool reserve_entry(void)
 {
-    if (s_pool_used + len + 1 > s_pool_size) return NULL;
-    char *dst = s_pool + s_pool_used;
-    memcpy(dst, src, len);
-    dst[len] = '\0';
-    s_pool_used += len + 1;
-    return dst;
+    if ((size_t)s_count < s_capacity) return true;
+
+    size_t new_capacity = s_capacity ? s_capacity * 2 : 128;
+    if (new_capacity < s_capacity || new_capacity > SIZE_MAX / sizeof(*s_entries)) {
+        s_scan_out_of_memory = true;
+        return false;
+    }
+    rom_store_entry_t *grown = heap_caps_realloc(
+        s_entries, new_capacity * sizeof(*s_entries),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!grown) {
+        ESP_LOGE(TAG, "PSRAM 不足，目录在 %d 个游戏处停止扩容", s_count);
+        s_scan_out_of_memory = true;
+        return false;
+    }
+    s_entries = grown;
+    s_capacity = new_capacity;
+    return true;
+}
+
+static void reset_catalog(void)
+{
+    for (int i = 0; i < s_count; i++) {
+        /* name/path 来自同一次连续分配，name 永远指向块首。 */
+        free((void *)s_entries[i].name);
+    }
+    free(s_entries);
+    s_entries = NULL;
+    s_count = 0;
+    s_capacity = 0;
+    s_scan_out_of_memory = false;
+}
+
+static bool append_entry(const char *name, const char *path,
+                         rom_system_t system, size_t offset, size_t rom_size,
+                         rom_storage_t storage, uint32_t archive_offset,
+                         uint32_t stored_size, uint32_t archive_crc32)
+{
+    if (!reserve_entry()) return false;
+
+    size_t name_bytes = strlen(name) + 1;
+    size_t path_bytes = strlen(path) + 1;
+    char *strings = heap_caps_malloc(name_bytes + path_bytes,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!strings) {
+        ESP_LOGE(TAG, "PSRAM 不足，目录在 %d 个游戏处停止分配名字/路径", s_count);
+        s_scan_out_of_memory = true;
+        return false;
+    }
+    memcpy(strings, name, name_bytes);
+    memcpy(strings + name_bytes, path, path_bytes);
+
+    rom_store_entry_t *entry = &s_entries[s_count++];
+    memset(entry, 0, sizeof(*entry));
+    entry->name           = strings;
+    entry->path           = strings + name_bytes;
+    entry->size           = rom_size;
+    entry->file_offset    = offset;
+    entry->archive_offset = archive_offset;
+    entry->stored_size    = stored_size;
+    entry->archive_crc32  = archive_crc32;
+    entry->storage        = storage;
+    entry->system         = system;
+    return true;
 }
 
 /* ---------------- 平台判定 ---------------- */
@@ -288,31 +383,12 @@ static bool add_entry(const char *path, const char *fname, const char *ext,
                       rom_system_t system, size_t offset, size_t rom_size,
                       rom_storage_t storage, const rom_zip_member_t *zip)
 {
-    if (s_count >= ROM_STORE_MAX) return false;
-
     char namebuf[ROM_STORE_NAME_LEN];
     display_name(fname, ext, namebuf, sizeof(namebuf));
-
-    char *name = pool_dup(namebuf, strlen(namebuf));
-    char *stored_path = name ? pool_dup(path, strlen(path)) : NULL;
-    if (!stored_path) {
-        ESP_LOGW(TAG, "名字/路径池满了，%s 之后的游戏不再收录", fname);
-        return false;
-    }
-
-    rom_store_entry_t *entry = &s_entries[s_count++];
-    entry->name        = name;
-    entry->path        = stored_path;
-    entry->size        = rom_size;
-    entry->file_offset = offset;
-    entry->storage     = storage;
-    entry->system      = system;
-    if (zip) {
-        entry->archive_offset = zip->local_header_offset;
-        entry->stored_size    = zip->compressed_size;
-        entry->archive_crc32  = zip->crc32;
-    }
-    return true;
+    return append_entry(namebuf, path, system, offset, rom_size, storage,
+                        zip ? zip->local_header_offset : 0,
+                        zip ? zip->compressed_size : 0,
+                        zip ? zip->crc32 : 0);
 }
 
 static bool path_segment_is(const char *segment, size_t len, const char *want)
@@ -453,7 +529,7 @@ static void scan_dir(size_t len, int depth)
         PROF_T0();
         ent = readdir(dir);
         PROF_ADD(s_t_readdir);
-        if (!ent || s_count >= ROM_STORE_MAX) break;
+        if (!ent || s_scan_out_of_memory) break;
         if (skip_entry(ent->d_name)) continue;
 
         size_t n = strlen(ent->d_name);
@@ -482,34 +558,378 @@ static int compare_entry(const void *a, const void *b)
     return strcasecmp(x->name, y->name);
 }
 
-int rom_store_init(void)
+static uint8_t *alloc_cache_bounce(size_t *chunk_size)
+{
+    *chunk_size = READ_CHUNK;
+    while (*chunk_size >= 4096) {
+        uint8_t *chunk = heap_caps_malloc(*chunk_size,
+                                          MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (chunk) return chunk;
+        *chunk_size /= 2;
+    }
+    *chunk_size = 0;
+    return NULL;
+}
+
+static bool read_exact(int fd, uint8_t *dst, size_t size)
+{
+    size_t done = 0;
+    while (done < size) {
+        ssize_t got = read(fd, dst + done, size - done);
+        if (got <= 0) return false;
+        done += (size_t)got;
+    }
+    return true;
+}
+
+/* payload 在 PSRAM，必须和 ROM 装载一样经内部 DMA RAM 中转。缓存通常约百 KB，
+ * 即便显示初始化后只拿到 4～16 KB，也只是几到几十条命令，不会再变成 971 次。 */
+static bool read_cache_payload(int fd, uint8_t *dst, size_t size)
+{
+    size_t chunk_size;
+    uint8_t *chunk = alloc_cache_bounce(&chunk_size);
+    if (!chunk) {
+        ESP_LOGW(TAG, "目录缓存拿不到 4 KB 内部反弹缓冲，退回直读 PSRAM");
+        return read_exact(fd, dst, size);
+    }
+
+    size_t done = 0;
+    bool ok = true;
+    while (done < size) {
+        size_t want = size - done;
+        if (want > chunk_size) want = chunk_size;
+        if (!read_exact(fd, chunk, want)) {
+            ok = false;
+            break;
+        }
+        memcpy(dst + done, chunk, want);
+        done += want;
+    }
+    free(chunk);
+    return ok;
+}
+
+static bool write_exact(int fd, const uint8_t *src, size_t size)
+{
+    size_t done = 0;
+    while (done < size) {
+        ssize_t put = write(fd, src + done, size - done);
+        if (put <= 0) return false;
+        done += (size_t)put;
+    }
+    return true;
+}
+
+static bool write_cache_payload(int fd, const uint8_t *src, size_t size)
+{
+    size_t chunk_size;
+    uint8_t *chunk = alloc_cache_bounce(&chunk_size);
+    if (!chunk) {
+        ESP_LOGW(TAG, "目录缓存拿不到 4 KB 内部反弹缓冲，退回直写 PSRAM");
+        return write_exact(fd, src, size);
+    }
+
+    size_t done = 0;
+    bool ok = true;
+    while (done < size) {
+        size_t want = size - done;
+        if (want > chunk_size) want = chunk_size;
+        memcpy(chunk, src + done, want);
+        if (!write_exact(fd, chunk, want)) {
+            ok = false;
+            break;
+        }
+        done += want;
+    }
+    free(chunk);
+    return ok;
+}
+
+static bool cache_record_valid(const rom_index_record_t *rec,
+                               const uint8_t *name, const uint8_t *path)
+{
+    if (rec->name_len == 0 || rec->name_len >= ROM_STORE_NAME_LEN ||
+        rec->path_len <= strlen(SD_MOUNT_POINT) + 1 ||
+        rec->path_len >= ROM_STORE_PATH_LEN ||
+        memchr(name, '\0', rec->name_len) || memchr(path, '\0', rec->path_len) ||
+        memcmp(path, SD_MOUNT_POINT "/", strlen(SD_MOUNT_POINT) + 1) != 0 ||
+        rec->system < ROM_SYSTEM_NES || rec->system > ROM_SYSTEM_ZIP) {
+        return false;
+    }
+
+    if (rec->storage == ROM_STORAGE_FILE) {
+        return rec->system != ROM_SYSTEM_ZIP && rec->size > 0 &&
+               rec->size <= ROM_MAX_SIZE && rec->file_offset <= 512 &&
+               rec->archive_offset == 0 && rec->stored_size == 0 &&
+               rec->archive_crc32 == 0;
+    }
+    if (rec->storage == ROM_STORAGE_ZIP_PENDING) {
+        return rec->size == 0 && rec->file_offset == 0 &&
+               rec->archive_offset == 0 && rec->stored_size == 0 &&
+               rec->archive_crc32 == 0;
+    }
+    return false; /* 扫描目录里永远不会存已经按需解析过的 ZIP */
+}
+
+static bool load_index_file(const char *path)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        if (errno != ENOENT) {
+            ESP_LOGW(TAG, "打不开目录缓存 %s（errno %d: %s）",
+                     path, errno, strerror(errno));
+        }
+        return false;
+    }
+
+    const char *bad_reason = NULL;
+    uint8_t *payload = NULL;
+    rom_index_header_t header;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(header) ||
+        !read_exact(fd, (uint8_t *)&header, sizeof(header))) {
+        bad_reason = "文件读不完整";
+        goto bad;
+    }
+    if (header.magic != ROM_INDEX_MAGIC || header.version != ROM_INDEX_VERSION ||
+        header.header_size != sizeof(header)) {
+        bad_reason = "格式版本不匹配";
+        goto bad;
+    }
+    if (header.entry_count == 0 || header.entry_count > INT_MAX ||
+        header.entry_count > header.payload_size / sizeof(rom_index_record_t) ||
+        (uint64_t)sizeof(header) + header.payload_size != (uint64_t)st.st_size) {
+        bad_reason = "长度或条目数不合法";
+        goto bad;
+    }
+
+    payload = heap_caps_malloc(header.payload_size,
+                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!payload) {
+        bad_reason = "PSRAM 不足";
+        goto bad;
+    }
+    if (!read_cache_payload(fd, payload, header.payload_size)) {
+        bad_reason = "内容读不完整";
+        goto bad;
+    }
+    close(fd);
+    fd = -1;
+    if (esp_crc32_le(0, payload, header.payload_size) != header.payload_crc32) {
+        bad_reason = "CRC 不匹配";
+        goto bad;
+    }
+
+    s_entries = heap_caps_calloc(header.entry_count, sizeof(*s_entries),
+                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_entries) {
+        bad_reason = "目录数组分配失败";
+        goto bad;
+    }
+    s_capacity = header.entry_count;
+    s_count = 0;
+
+    const uint8_t *p = payload;
+    const uint8_t *end = payload + header.payload_size;
+    for (uint32_t i = 0; i < header.entry_count; i++) {
+        rom_index_record_t rec;
+        if ((size_t)(end - p) < sizeof(rec)) {
+            bad_reason = "目录项被截断";
+            goto bad;
+        }
+        memcpy(&rec, p, sizeof(rec));
+        p += sizeof(rec);
+        size_t strings_size = (size_t)rec.name_len + rec.path_len;
+        if ((size_t)(end - p) < strings_size ||
+            !cache_record_valid(&rec, p, p + rec.name_len)) {
+            bad_reason = "目录项内容不合法";
+            goto bad;
+        }
+
+        char name[ROM_STORE_NAME_LEN];
+        char stored_path[ROM_STORE_PATH_LEN];
+        memcpy(name, p, rec.name_len);
+        name[rec.name_len] = '\0';
+        p += rec.name_len;
+        memcpy(stored_path, p, rec.path_len);
+        stored_path[rec.path_len] = '\0';
+        p += rec.path_len;
+        if (!append_entry(name, stored_path, (rom_system_t)rec.system,
+                          rec.file_offset, rec.size, (rom_storage_t)rec.storage,
+                          rec.archive_offset, rec.stored_size, rec.archive_crc32)) {
+            bad_reason = "目录项分配失败";
+            goto bad;
+        }
+    }
+    if (p != end) {
+        bad_reason = "文件尾有多余数据";
+        goto bad;
+    }
+
+    free(payload);
+    return true;
+
+bad:
+    if (fd >= 0) close(fd);
+    free(payload);
+    reset_catalog();
+    ESP_LOGW(TAG, "目录缓存 %s 无效（%s），回退完整扫描", path,
+             bad_reason ? bad_reason : "未知错误");
+    return false;
+}
+
+static bool save_index_file(void)
+{
+    if (s_count <= 0) return false; /* 空卡不缓存，之后加文件无需先知道刷新键 */
+
+    size_t payload_size = 0;
+    for (int i = 0; i < s_count; i++) {
+        size_t name_len = strlen(s_entries[i].name);
+        size_t path_len = strlen(s_entries[i].path);
+        size_t add = sizeof(rom_index_record_t) + name_len + path_len;
+        if (name_len > UINT16_MAX || path_len > UINT16_MAX ||
+            payload_size > UINT32_MAX - add) {
+            ESP_LOGW(TAG, "目录缓存超过格式可表示大小，本次不保存");
+            return false;
+        }
+        payload_size += add;
+    }
+
+    uint8_t *payload = heap_caps_malloc(payload_size,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!payload) {
+        ESP_LOGW(TAG, "目录缓存需要 %u KB PSRAM，本次不保存",
+                 (unsigned)(payload_size / 1024));
+        return false;
+    }
+
+    uint8_t *p = payload;
+    for (int i = 0; i < s_count; i++) {
+        const rom_store_entry_t *entry = &s_entries[i];
+        size_t name_len = strlen(entry->name);
+        size_t path_len = strlen(entry->path);
+        rom_index_record_t rec = {
+            .size = (uint32_t)entry->size,
+            .file_offset = (uint32_t)entry->file_offset,
+            .archive_offset = entry->archive_offset,
+            .stored_size = entry->stored_size,
+            .archive_crc32 = entry->archive_crc32,
+            .name_len = (uint16_t)name_len,
+            .path_len = (uint16_t)path_len,
+            .storage = (uint8_t)entry->storage,
+            .system = (uint8_t)entry->system,
+        };
+        memcpy(p, &rec, sizeof(rec));
+        p += sizeof(rec);
+        memcpy(p, entry->name, name_len);
+        p += name_len;
+        memcpy(p, entry->path, path_len);
+        p += path_len;
+    }
+
+    rom_index_header_t header = {
+        .magic = ROM_INDEX_MAGIC,
+        .version = ROM_INDEX_VERSION,
+        .header_size = sizeof(header),
+        .entry_count = (uint32_t)s_count,
+        .payload_size = (uint32_t)payload_size,
+        .payload_crc32 = esp_crc32_le(0, payload, payload_size),
+    };
+
+    unlink(ROM_INDEX_TEMP_PATH);
+    int fd = open(ROM_INDEX_TEMP_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    bool ok = fd >= 0 &&
+              write_exact(fd, (const uint8_t *)&header, sizeof(header)) &&
+              write_cache_payload(fd, payload, payload_size) && fsync(fd) == 0;
+    int saved_errno = errno;
+    if (fd >= 0 && close(fd) != 0) {
+        ok = false;
+        saved_errno = errno;
+    }
+    free(payload);
+    if (!ok) {
+        unlink(ROM_INDEX_TEMP_PATH);
+        ESP_LOGW(TAG, "目录缓存写入失败（errno %d: %s），不影响本次游戏列表",
+                 saved_errno, strerror(saved_errno));
+        return false;
+    }
+
+    /* FatFs 不保证 rename 能覆盖已有目标，所以保留一份短暂备份。掉电若发生在
+     * 两次改名之间，下次会从 .bak 恢复；不会把半写文件当成有效缓存。 */
+    if (unlink(ROM_INDEX_BACKUP_PATH) != 0 && errno != ENOENT) {
+        ESP_LOGW(TAG, "清理旧目录备份失败（errno %d: %s）", errno, strerror(errno));
+    }
+    if (rename(ROM_INDEX_PATH, ROM_INDEX_BACKUP_PATH) != 0 && errno != ENOENT) {
+        saved_errno = errno;
+        unlink(ROM_INDEX_TEMP_PATH);
+        ESP_LOGW(TAG, "轮换目录缓存失败（errno %d: %s）", saved_errno,
+                 strerror(saved_errno));
+        return false;
+    }
+    if (rename(ROM_INDEX_TEMP_PATH, ROM_INDEX_PATH) != 0) {
+        saved_errno = errno;
+        rename(ROM_INDEX_BACKUP_PATH, ROM_INDEX_PATH);
+        unlink(ROM_INDEX_TEMP_PATH);
+        ESP_LOGW(TAG, "启用新目录缓存失败（errno %d: %s）", saved_errno,
+                 strerror(saved_errno));
+        return false;
+    }
+    unlink(ROM_INDEX_BACKUP_PATH);
+    ESP_LOGI(TAG, "目录缓存已更新：%d 项，%u KB", s_count,
+             (unsigned)((sizeof(header) + payload_size + 1023) / 1024));
+    return true;
+}
+
+static void compact_catalog(void)
+{
+    if (s_count > 0 && (size_t)s_count < s_capacity) {
+        rom_store_entry_t *shrunk = heap_caps_realloc(
+            s_entries, (size_t)s_count * sizeof(*s_entries),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (shrunk) {
+            s_entries = shrunk;
+            s_capacity = (size_t)s_count;
+        }
+    }
+}
+
+int rom_store_init(bool force_refresh)
 {
     if (s_count >= 0) return s_count;
     s_count = 0;
 
     if (sd_card_mount() != ESP_OK) return 0;
 
-    s_entries = heap_caps_calloc(ROM_STORE_MAX, sizeof(*s_entries),
-                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_pool_size = (size_t)ROM_STORE_MAX * (ROM_STORE_NAME_LEN + ROM_STORE_PATH_LEN);
-    s_pool = heap_caps_malloc(s_pool_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_entries || !s_pool) {
-        ESP_LOGE(TAG, "目录缓冲分配失败（需要 %u KB PSRAM）",
-                 (unsigned)((ROM_STORE_MAX * sizeof(*s_entries) + s_pool_size) / 1024));
-        free(s_entries); free(s_pool);
-        s_entries = NULL; s_pool = NULL;
-        return 0;
-    }
-    s_pool_used = 0;
+    s_entries = NULL;
+    s_capacity = 0;
+    s_scan_out_of_memory = false;
 
     int64_t t0 = esp_timer_get_time();
+    if (!force_refresh) {
+        bool from_backup = false;
+        if (!load_index_file(ROM_INDEX_PATH)) {
+            from_backup = load_index_file(ROM_INDEX_BACKUP_PATH);
+        }
+        if (s_count > 0) {
+            int64_t total_ms = (esp_timer_get_time() - t0) / 1000;
+            ESP_LOGI(TAG, "TF 卡：从%s目录缓存载入 %d 个游戏（耗时 %lld ms）",
+                     from_backup ? "备份" : "", s_count, (long long)total_ms);
+            return s_count;
+        }
+    } else {
+        ESP_LOGI(TAG, "已忽略目录缓存，开始完整扫描");
+    }
+
+    reset_catalog();
     strcpy(s_path, SD_MOUNT_POINT);
     scan_dir(strlen(SD_MOUNT_POINT), 0);
 
-    if (s_count == ROM_STORE_MAX) {
-        ESP_LOGW(TAG, "已经收满 %d 个，卡上剩下的游戏不再扫描", ROM_STORE_MAX);
+    /* 倍增会留下不到一倍的空槽。扫描结束、还没人拿目录指针时缩到实数，
+     * 把多余 PSRAM 还给模拟器；缩容失败也不影响已有目录。 */
+    compact_catalog();
+    if (s_count > 1) {
+        qsort(s_entries, (size_t)s_count, sizeof(*s_entries), compare_entry);
     }
-    qsort(s_entries, (size_t)s_count, sizeof(*s_entries), compare_entry);
 
     int64_t total_ms = (esp_timer_get_time() - t0) / 1000;
     ESP_LOGI(TAG, "TF 卡：%d 个游戏可用（扫描耗时 %lld ms）", s_count,
@@ -518,6 +938,11 @@ int rom_store_init(void)
     ESP_LOGI(TAG, "扫描分解 ms：readdir %lld  stat %lld（%d 次）",
              (long long)(s_t_readdir / 1000), (long long)(s_t_stat / 1000), s_n_stat);
 #endif
+    if (!s_scan_out_of_memory) {
+        save_index_file();
+    } else {
+        ESP_LOGW(TAG, "本次扫描因 PSRAM 不足提前结束，不保存不完整目录缓存");
+    }
     return s_count;
 }
 

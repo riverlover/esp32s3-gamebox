@@ -250,7 +250,12 @@ void app_main(void)
     input_serial_init();
     input_usb_init();
     input_gamepad_init();
-    rom_store_init();
+    uint16_t boot_keys = input_serial_poll() | input_gamepad_poll() | input_usb_poll();
+    bool refresh_rom_index = (boot_keys & NES_PAD_SELECT) != 0;
+    if (refresh_rom_index) {
+        ESP_LOGI(TAG, "检测到 SELECT，忽略 ROM 目录缓存并完整重扫");
+    }
+    rom_store_init(refresh_rom_index);
     if (boot_menu()) {
         input_gamepad_show();
     }

@@ -275,7 +275,7 @@ static void draw_games(int count, const category_t *cat, int sel)
 
 bool rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
 {
-    int count = rom_store_init();
+    int count = rom_store_init(false);
     if (count <= 0) {
         ESP_LOGW(TAG, "TF 卡上没有游戏，用编译期嵌入的那个");
         return false;
