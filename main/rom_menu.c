@@ -259,7 +259,7 @@ static void draw_games(int count, const category_t *cat, int sel)
         const rom_store_entry_t *e = i >= 0 ? rom_store_entry(i) : NULL;
         if (!e) break;
 
-        /* ROM 目录位于 flash mmap，格式化也会使用较深的 libc 调用栈。都在
+        /* ROM 目录位于 PSRAM，格式化也会使用较深的 libc 调用栈。都在
          * 菜单任务里先完成，核 1 的推屏回调只读取这份栈上快照，避免长列表
          * 页面令 3 KB 推屏任务栈承受目录访问和 snprintf。
          *
@@ -276,7 +276,7 @@ bool rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
 {
     int count = rom_store_init();
     if (count <= 0) {
-        ESP_LOGW(TAG, "roms 分区里没有游戏，用编译期嵌入的那个");
+        ESP_LOGW(TAG, "TF 卡上没有游戏，用编译期嵌入的那个");
         return false;
     }
 
@@ -366,10 +366,9 @@ bool rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
                 if (e) {
                     *entry = e;
                     *launch_keys = now;
-                    printf("选中：[%s] %s（ROM %u KB，分区 %u KB）\n\n",
+                    printf("选中：[%s] %s（%u KB）\n  %s\n\n",
                            system_name(e->system), e->name,
-                           (unsigned)(e->size / 1024),
-                           (unsigned)(e->stored_size / 1024));
+                           (unsigned)(e->size / 1024), e->path);
                     return true;
                 }
 

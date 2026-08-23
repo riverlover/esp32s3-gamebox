@@ -195,7 +195,7 @@ typedef struct {
     int     rx, ry, ex, ey;         /* 原始读数 / 去中位后的偏移 */
     uint8_t d;                      /* 折算出的方向键位 */
     uint16_t keys;                  /* 面键 + SELECT/START */
-    const char *storage;            /* ROM 分区占用摘要，诊断画面开着期间不变 */
+    const char *storage;            /* TF 卡占用摘要，诊断画面开着期间不变 */
 } viz_t;
 
 static int draw_key_status(int x, int y, const char *name, bool pressed)
@@ -275,18 +275,20 @@ void input_gamepad_show(void)
     const uint16_t exit_combo = GAMEPAD_BIT_A | GAMEPAD_BIT_B;
 
     /* 存储占用只需要读一次——rom_menu_pick() 走到这里之前已经调过
-     * rom_store_init()，诊断画面开着的这几秒分区占用也不会变。 */
-    size_t used = 0, capacity = 0;
+     * rom_store_init()，诊断画面开着的这几秒卡上占用也不会变。
+     * 用 uint64_t：size_t 是 32 位，大容量卡会溢出。 */
+    uint64_t used = 0, capacity = 0;
     rom_store_usage(&used, &capacity);
     char storage_line[48];
     if (capacity > 0) {
-        int pct = (int)((uint64_t)used * 100 / capacity);
+        int pct = (int)(used * 100 / capacity);
         snprintf(storage_line, sizeof(storage_line),
-                 "ROM %.1f/%.1fMB %d%% (%.1fMB FREE)",
-                 used / (1024.0f * 1024.0f), capacity / (1024.0f * 1024.0f),
-                 pct, (capacity - used) / (1024.0f * 1024.0f));
+                 "SD %.0f/%.0fMB %d%% (%.0fMB FREE)",
+                 (double)used / (1024.0 * 1024.0),
+                 (double)capacity / (1024.0 * 1024.0), pct,
+                 (double)(capacity - used) / (1024.0 * 1024.0));
     } else {
-        snprintf(storage_line, sizeof(storage_line), "ROM STORAGE: N/A");
+        snprintf(storage_line, sizeof(storage_line), "SD CARD: N/A");
     }
 
     printf("\n摇杆可视化：点跟着手走就说明映射对了。"

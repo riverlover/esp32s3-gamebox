@@ -34,9 +34,11 @@ static const char *TAG = "main";
 
 #define SHOW_DISPLAY_SELFTEST  0
 
-/* TF 卡上电自检：只往串口输出，不碰屏幕，跑完就卸载。硬件点亮阶段开着，
- * 接进 rom_store 之后再关掉。见 sd_card.c 文件头。 */
-#define SD_SELFTEST 1
+/* TF 卡自检：在挂载之后多跑一遍「列根目录 + 写读校验」，只往串口输出。
+ * ROM 现在全部从卡上读，挂载本身是必做的（rom_store_init 会调）；这个开关
+ * 只控制那些额外的诊断输出，在慢卡上要多花两秒。**换卡或改接线时打开**，
+ * 平时关着。见 sd_card.c 文件头。 */
+#define SD_SELFTEST 0
 
 /* 超频实验开关，见 overclock.h。0 = 不动寄存器，维持 Kconfig 里配置的 240MHz；
  * 非零走 overclock_apply()，档位范围 [-8, 8]，实测主频打印在串口日志的
@@ -215,10 +217,13 @@ void app_main(void)
         return;
     }
 
+    /* 挂卡放在 prealloc 之后：那两块 64 KB 连续内部内存先占住，再让 FATFS
+     * 去要它的工作缓冲，免得把内存碎片化连累到 NES 视频缓冲。
+     * 挂不上不是致命错误——没卡时下面回退到编译期嵌入的 ROM。 */
 #if SD_SELFTEST
-    /* 放在 prealloc 之后：那两块 64 KB 连续内部内存先占住，再让 FATFS 去要
-     * 它的工作缓冲，免得自检把内存碎片化连累到 NES 视频缓冲。 */
     sd_card_selftest();
+#else
+    sd_card_mount();
 #endif
 
     /* 声音开关只在当前运行中有效；每次启动都先恢复默认开启。 */
@@ -238,9 +243,9 @@ void app_main(void)
      * 里还会再调一遍，都是幂等的，不会重复初始化出问题。
      *
      * rom_store_init() 也提到这里先调一次：选 TEST 会在 rom_menu_pick()
-     * 之前就进 input_gamepad_show()，而摇杆诊断画面里的 ROM 分区占用行
-     * 靠 rom_store_usage() 读数据——不提前调这一下，分区还没被认过，
-     * 诊断画面只能显示 "ROM STORAGE: N/A"。同样是幂等调用。 */
+     * 之前就进 input_gamepad_show()，而摇杆诊断画面里的存储占用行
+     * 靠 rom_store_usage() 读数据——不提前调这一下，卡还没被扫过，
+     * 诊断画面只能显示 "SD CARD: N/A"。同样是幂等调用。 */
     input_serial_init();
     input_usb_init();
     input_gamepad_init();
@@ -249,9 +254,9 @@ void app_main(void)
         input_gamepad_show();
     }
 
-    /* 开机选单只返回目录项；各模拟器在自己的大块内存准备妥当后再解压，SNES
-     * 尤其不能先解出 4 MiB 再复制一份，否则 8 MiB PSRAM 会在峰值时耗尽。
-     * 分区不可用时 entry 留 NULL，NES 继续走编译期嵌入 ROM 的回退路径。 */
+    /* 开机选单只返回目录项；各模拟器在自己的大块内存准备妥当后再从卡上读，
+     * SNES 尤其不能先读出 4 MiB 再复制一份，否则 8 MiB PSRAM 会在峰值时耗尽。
+     * 卡不可用时 entry 留 NULL，NES 继续走编译期嵌入 ROM 的回退路径。 */
     const rom_store_entry_t *entry = NULL;
     uint16_t launch_keys = 0;
     rom_menu_pick(&entry, &launch_keys);

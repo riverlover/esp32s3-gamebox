@@ -24,7 +24,10 @@ idf.py flash-roms                                          # 只在加/删顶层
   ROM 分区 13 MB，Deflate 镜像目前几 MiB（随游戏增删浮动），烧一次仍较久，而它几乎从不变。
   烧录时间只跟镜像实际字节数走（`esptool write_flash` 写的是文件），跟分区开多大无关。
 - `sdkconfig` 不入库，由 `sdkconfig.defaults` 生成。要固化配置就改 `.defaults`，
-  别改 `sdkconfig`（会被覆盖）。里面每一条都有理由（240 MHz CPU、1000 Hz tick、
+  别改 `sdkconfig`（会被覆盖）。
+  ⚠️ **改完 `.defaults` 必须 `rm sdkconfig` 再 build**：IDF 只在 `sdkconfig`
+  不存在时读 defaults，已有的 `sdkconfig` 会赢。踩过一次——加了长文件名配置，
+  build 通过、烧进去一查压根没生效。里面每一条都有理由（240 MHz CPU、1000 Hz tick、
   OCT PSRAM、`SPIRAM_MALLOC_RESERVE_INTERNAL=8192`）——改动前先读那些注释。
 
 ⚠️ **烧录和串口监视需要接着板子**，agent 通常做不到。改完代码把命令交给用户跑，
@@ -46,7 +49,9 @@ idf.py flash-roms                                          # 只在加/删顶层
 | `DISP_PROFILE`（默认 1） | `main/display.c` | 每秒打一行核 1 推屏耗时。调 `BAND_LINES` / 画布尺寸时看这个 |
 | `DIAG_TIMING` | `main/nes_emu.c` | 开机跑一遍分阶段计时（只 CPU / +PPU / 完整），定位核 0 瓶颈 |
 | `SHOW_DISPLAY_SELFTEST` | `main/main.c` | 点屏诊断图，验旋转/颜色顺序/反色 |
-| `SD_SELFTEST`（默认 1） | `main/main.c` / `main/sd_card.c` | TF 卡自检：挂载→列根目录→写读校验→卸载，只走串口。挂载失败会自动降速重试做对照实验。跑完释放 SPI3，模拟器阶段零占用，开机约 +0.6 秒 |
+| `SD_SELFTEST`（默认 0） | `main/main.c` | TF 卡自检：列根目录 + 写读校验，只走串口。**换卡或改接线时打开**，慢卡上要多花两秒 |
+| `SD_BENCHMARK`（默认 0） | `main/sd_card.c` | 扇区读基准，量这张卡的命令固定开销和吞吐。判读方法和本机实测值见那个函数的注释 |
+| `SCAN_PROFILE`（默认 0） | `main/rom_store.c` | 扫描分阶段计时（readdir / stat），定位扫描慢在哪 |
 | `OVERCLOCK_LEVEL`（默认 0，关闭） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过 |
 
 开机画面（`main.c`）现在会停下来问 GAME/TEST：选 TEST 才会进摇杆位置 +
@@ -97,26 +102,34 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
 消失」的测算结论，上板实测已经证伪——铺满后都能稳定 60 fps，没有精灵丢失。
 完整推导见 `display.h`。
 
-### ROM 来源：分区 mmap，编译期嵌入做回退
+### ROM 来源：TF 卡，编译期嵌入做回退
 
-- `roms/**/*.{nes,gb,gbc,sfc,smc,md,bin,zip}` → `tools/pack_roms.py` 打成自定义镜像
-  （`.zip` 里恰好有一个可识别 ROM 时自动取出；0 个或多个都只打一行提示跳过。
-  不认识的扩展名和 `.7z`/`.rar` 同样会打提示——以前是静默消失，最难查。
-  GB/GBC 还会查 mapper：gnuboy 没实现 MBC6/MBC7/MMM01，那类卡带烧进去是黑屏，
-  打包时就警告，见 `components/gnuboy/README.gamebox.md`）
-  （magic + 定长目录表 + 每个 ROM 独立 raw Deflate）
-  → 烧进 `partitions.csv` 里 offset `0x210000` 的 13 MB `roms` 分区（子类型 0x40）。
-  分区容量由 `pack_roms.py` 的 `roms_partition_size()` 现读 `partitions.csv`，
-  改分区大小不用再同步脚本（以前写死 8 MB，扩容时忘了改会在打包这步炸）。
-- `roms/` 按平台分子目录（`nes/` `gb/` `gbc/` `snes/` `md/`），**纯粹是给人看的**：
-  平台由 ROM 头判定，不看目录名，放错目录也不影响结果。菜单顺序也和目录无关
-  （排序键取文件名，不含路径）。想临时下架一个游戏就挪进 `removed-YYYYMMDD/`，
-  `pack_roms.py` 会整棵跳过前缀为 `removed` / `_` / `.` 的目录。
-- `rom_store.c` 一次 `esp_partition_mmap` 整个分区，菜单只读目录；确认后只把选中的
-  Deflate ROM 解到 PSRAM。SNES 必须直接解到最终可写缓冲，不能先解一份再复制 4 MiB。
-  **故意不用 SPIFFS/ZIP 文件系统**：自定义目录已经提供随机访问，套第二层目录只会重复。
-- `rom_store_init()` 的校验写得很啰嗦是因为 offset/size 直接当指针用，而数据来自 flash
-  （没烧过时全是 0xFF）。所有失败都只返回 0、不 abort，调用方回退到 `ROM_CHOICE` 选的嵌入 ROM。
+**游戏全部从 TF 卡读**。flash 那个 13 MB `roms` 分区已经不再供 ROM 使用
+（`partitions.csv` 和 `tools/pack_roms.py` 暂时留着，等确定改作他用再处理）。
+
+- 卡上随便怎么摆。`rom_store.c` 从 `/sd` 递归扫描（最多 4 层），认这些扩展名：
+  `.nes .gb .gbc .sfc .smc .md .bin`。前缀是 `.` / `_` / `removed` 的目录整棵跳过，
+  `System Volume Information` 也跳过。压缩包会打一行提示——**设备上不解压，
+  要先在电脑上解开**（以前 `pack_roms.py` 会自动解，卡上没这个待遇了）。
+- 目录名只是给人看的，平台不看目录。仓库约定是 `/sd/roms/{nes,gb,gbc,snes,md}/`。
+- ⚠️ **扫描时一个文件都不打开**，平台只按扩展名定、大小只靠 `stat()`。这是实测
+  逼出来的：SD 命令的固定开销远大于传输字节数（本机那张 2 GB 老卡每条命令要
+  40 ms），原来每个文件都 open+读头+seek，39 个游戏扫 14 秒；改成纯 readdir+stat
+  之后 2.8 秒。**ROM 头照样验，只是挪到了 `rom_store_load()`。**
+  代价：扩展名骗人的文件（尤其通用的 `.bin`）会进到菜单，选中时才报错。
+- GB / GBC 按扩展名分**只影响菜单分组**：`gbc_emu.c` 根本不读 `entry->system`，
+  gnuboy 自己从 ROM 头 0x143 判 CGB/SGB/DMG（`gnuboy.c:234`）。
+- ⚠️ **`rom_store_load()` 必须经内部 RAM 反弹缓冲**，不能让 `fread` 直接写 PSRAM。
+  `sdmmc_read_sectors()` 发现目标不是 DMA-capable 就退化成一次一个 512 字节扇区
+  读 + memcpy（IDF 的 `sdmmc_cmd.c`）。本机单扇区读 72 ms —— 4 MiB 卡带这样读要
+  十分钟。中转之后走多扇区 DMA。缓冲按 32→16→8→4 KB 梯度回退，因为装载时
+  内部 RAM 已经被 `nes_emu_prealloc` 和 SNES 帧缓冲吃掉大半。
+- SNES 的 512 字节拷贝机头只从文件大小就能判出来（整卡带都是 `0x400` 的整数倍），
+  不用开文件。`rom_store_load(entry, extra_bytes, ...)` 仍然直接读进最终可写缓冲，
+  不能先读一份再复制 4 MiB。
+- 所有失败都只让 `rom_store_init()` 返回 0、不 abort：没插卡、卡挂不上、卡上没有
+  合法 ROM，都回退到 `nes_emu.c` 里 `ROM_CHOICE` 选的编译期嵌入 ROM。
+  ⚠️ 目前**没卡时屏幕上没有任何提示**，直接进内置游戏，看起来像坏了。
 
 ### 输入
 

@@ -36,3 +36,13 @@ CONFIG_FREERTOS_HZ=1000
 # 自定义分区表：2 MB app + 13 MB roms + 960 KB SNES 存档。见 partitions.csv。
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# FATFS 长文件名。默认只认 8.3 短名，"Super Mario World.sfc" 会变成
+# "SUPERM~1.SFC" —— ROM 现在从 TF 卡按文件名读，菜单直接显示这个名字，
+# 短名会让列表没法看。HEAP 把长名工作区放堆（可落 PSRAM），不吃内部 SRAM；
+# 选 STACK 会往调用栈压 ~512 字节，而本项目好几个任务的栈只有 3~4 KB。
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=128
+
+# 文件名按 UTF-8 解释，否则中日文名字的 ROM 在菜单里是乱码。
+CONFIG_FATFS_API_ENCODING_UTF_8=y

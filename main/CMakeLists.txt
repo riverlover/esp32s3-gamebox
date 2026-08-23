@@ -7,8 +7,6 @@ idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                             "rom_store.c" "rom_menu.c" "overclock.c" "sd_card.c"
                        INCLUDE_DIRS "."
                        REQUIRES nofrendo gnuboy snes9x gwenesis
-                                esp_partition  # roms 分区 mmap
-                                esp_rom        # ROM 内置 tinfl，解压逐条 Deflate ROM
                                 esp_lcd
                                 esp_driver_spi
                                 esp_driver_gpio
@@ -21,7 +19,7 @@ idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                                 esp_adc         # 摇杆走 ADC1
                                 esp_timer
                                 esp_hw_support # ROM CRC 与存档文件 CRC
-                                fatfs          # SMW 即时存档，底层自动带 wear levelling
+                                fatfs          # TF 卡 + SMW 即时存档（后者底层自动带 wear levelling）
                                 spi_flash      # 提供 esp_flash.h
                                 sdmmc          # TF 卡：sdmmc_cmd.h / 卡信息打印
                                 esp_driver_sdspi # TF 卡走 SPI3
