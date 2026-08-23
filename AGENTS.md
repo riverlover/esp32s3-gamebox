@@ -46,6 +46,7 @@ idf.py flash-roms                                          # 只在加/删顶层
 | `DISP_PROFILE`（默认 1） | `main/display.c` | 每秒打一行核 1 推屏耗时。调 `BAND_LINES` / 画布尺寸时看这个 |
 | `DIAG_TIMING` | `main/nes_emu.c` | 开机跑一遍分阶段计时（只 CPU / +PPU / 完整），定位核 0 瓶颈 |
 | `SHOW_DISPLAY_SELFTEST` | `main/main.c` | 点屏诊断图，验旋转/颜色顺序/反色 |
+| `SD_SELFTEST`（默认 1） | `main/main.c` / `main/sd_card.c` | TF 卡自检：挂载→列根目录→写读校验→卸载，只走串口。挂载失败会自动降速重试做对照实验。跑完释放 SPI3，模拟器阶段零占用，开机约 +0.6 秒 |
 | `OVERCLOCK_LEVEL`（默认 0，关闭） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过 |
 
 开机画面（`main.c`）现在会停下来问 GAME/TEST：选 TEST 才会进摇杆位置 +
@@ -168,6 +169,9 @@ GPLv2-**only**（源文件无 or later）而 gwenesis 是 GPL v3+/AGPL v3，两�
 屏的 SCK/MOSI/CS 必须是 SPI2 的 IOMUX 原生脚（12/11/10），换脚会降到 40 MHz。
 摇杆两轴必须在 ADC1 范围（GPIO1~10），当前用 GPIO1/2；GPIO7/8
 已给 Shield E/F 小键用 GPIO7/8 做 START/SELECT。
+TF 卡走 SPI3（GPIO39/41/40/42 = CLK/MOSI/MISO/CS），**不能挂 SPI2** —— 那条总线被
+ST7789 的条带流式推屏独占，见 `docs/hardware.md` §10。剩下完全自由的只有 21/38/47，
+加模拟量输入则只剩 GPIO3（ADC1 里唯一空位）。
 
 ## 更多文档
 

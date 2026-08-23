@@ -28,10 +28,15 @@
 #include "genesis_emu.h"
 #include "rom_menu.h"
 #include "overclock.h"
+#include "sd_card.h"
 
 static const char *TAG = "main";
 
 #define SHOW_DISPLAY_SELFTEST  0
+
+/* TF 卡上电自检：只往串口输出，不碰屏幕，跑完就卸载。硬件点亮阶段开着，
+ * 接进 rom_store 之后再关掉。见 sd_card.c 文件头。 */
+#define SD_SELFTEST 1
 
 /* 超频实验开关，见 overclock.h。0 = 不动寄存器，维持 Kconfig 里配置的 240MHz；
  * 非零走 overclock_apply()，档位范围 [-8, 8]，实测主频打印在串口日志的
@@ -209,6 +214,12 @@ void app_main(void)
         ESP_LOGE(TAG, "NES 视频缓冲分配失败，内部 RAM 不够");
         return;
     }
+
+#if SD_SELFTEST
+    /* 放在 prealloc 之后：那两块 64 KB 连续内部内存先占住，再让 FATFS 去要
+     * 它的工作缓冲，免得自检把内存碎片化连累到 NES 视频缓冲。 */
+    sd_card_selftest();
+#endif
 
     /* 声音开关只在当前运行中有效；每次启动都先恢复默认开启。 */
     audio_output_settings_init();

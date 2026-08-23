@@ -4,7 +4,7 @@ idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                             "gbc_emu.c" "snes_emu.c" "snes_save.c" "genesis_emu.c"
                             "rgb_led.c" "audio_output.c"
                             "input_serial.c" "input_gamepad.c" "input_usb.c"
-                            "rom_store.c" "rom_menu.c" "overclock.c"
+                            "rom_store.c" "rom_menu.c" "overclock.c" "sd_card.c"
                        INCLUDE_DIRS "."
                        REQUIRES nofrendo gnuboy snes9x gwenesis
                                 esp_partition  # roms 分区 mmap
@@ -23,6 +23,8 @@ idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                                 esp_hw_support # ROM CRC 与存档文件 CRC
                                 fatfs          # SMW 即时存档，底层自动带 wear levelling
                                 spi_flash      # 提供 esp_flash.h
+                                sdmmc          # TF 卡：sdmmc_cmd.h / 卡信息打印
+                                esp_driver_sdspi # TF 卡走 SPI3
                        # 这里登记的 ROM 只是「可选」，不是全都进固件 —— 没被
                        # nes_emu.c 的 ROM_CHOICE 选中的那几个没有 extern 引用，
                        # 会被链接器的 --gc-sections 回收掉。实测多登记 4 个 ROM
