@@ -1,7 +1,7 @@
 /*
  * 在 ESP32-S3 + ST7789（240x320）上运行 NES / GB / GBC / SNES / Genesis
  *
- * 流程：打印板级信息 -> 初始化屏 -> 开机选游戏 -> 启动模拟器（不返回）
+ * 流程：打印板级信息 -> 初始化屏 -> 选择 GAME/WORDS/TEST -> 学习或启动模拟器
  *
  * 接线见 display.h 顶部。换屏或显示不正常时改那里的宏，不用动这个文件。
  * 把 SHOW_DISPLAY_SELFTEST 改成 1 可以在启动模拟器前先跑一遍点屏诊断图。
@@ -30,6 +30,7 @@
 #include "rom_menu.h"
 #include "overclock.h"
 #include "sd_card.h"
+#include "word_study.h"
 
 static const char *TAG = "main";
 
@@ -152,25 +153,34 @@ static void splash(void)
     vTaskDelay(pdMS_TO_TICKS(1500));
 }
 
-/* loading 那 1.5 秒过完之后，开机画面停下来问 GAME/TEST，不再自动往下走——
+/* loading 那 1.5 秒过完之后，开机画面停下来问 GAME/WORDS/TEST，不再自动往下走——
  * 之前是只要 PAD_DIAG_SCREEN=1（编译期开关）就每次开机都强制看一遍摇杆
  * 诊断画面，想跳过看不了。现在交给玩家自己选：GAME 直接进 ROM 菜单，
  * TEST 先看一遍 input_gamepad_show() 那套摇杆/按键可视化。 */
 #define BOOT_MENU_POLL_MS 16   /* 和 rom_menu.c 的 POLL_MS 同一个量级 */
+
+typedef enum {
+    BOOT_MODE_GAME,
+    BOOT_MODE_WORDS,
+    BOOT_MODE_TEST,
+    BOOT_MODE_COUNT,
+} boot_mode_t;
 
 static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
     const int *selected = ctx;
     splash_frame_common();
 
-    static const char *labels[2] = { "GAME", "TEST" };
+    static const char *labels[BOOT_MODE_COUNT] = { "GAME", "WORDS", "TEST" };
     const int char_w = 6 * 2;               /* scale 2 */
-    const int word_w = 4 * char_w;          /* "GAME"/"TEST" 都是 4 个字符 */
-    const int gap = 40;
-    int x = (DISP_FB_W - (word_w * 2 + gap)) / 2;
+    static const int chars[BOOT_MODE_COUNT] = { 4, 5, 4 };
+    const int gap = 12;
+    int total_w = (chars[0] + chars[1] + chars[2]) * char_w + gap * 2;
+    int x = (DISP_FB_W - total_w) / 2;
     const int y = 168;
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < BOOT_MODE_COUNT; i++) {
+        int word_w = chars[i] * char_w;
         if (i == *selected) {
             display_fill_rect(x - 6, y - 3, word_w + 12, 7 * 2 + 6, C_GB2);
             display_text(x, y, labels[i], C_GB0, 2);
@@ -181,7 +191,7 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
     }
 }
 
-static bool boot_menu(void)
+static boot_mode_t boot_menu(void)
 {
     int selected = 0;
     display_stream_sync(boot_menu_strip, &selected);
@@ -194,11 +204,12 @@ static bool boot_menu(void)
         prev = now;
 
         if (edge & (NES_PAD_LEFT | NES_PAD_RIGHT)) {
-            selected ^= 1;
+            int delta = (edge & NES_PAD_LEFT) ? -1 : 1;
+            selected = (selected + delta + BOOT_MODE_COUNT) % BOOT_MODE_COUNT;
             display_stream_sync(boot_menu_strip, &selected);
         }
         if (edge & (NES_PAD_A | NES_PAD_START)) {
-            return selected == 1;   /* true = TEST */
+            return (boot_mode_t)selected;
         }
     }
 }
@@ -243,10 +254,8 @@ void app_main(void)
     /* boot_menu() 要读输入，所以三路输入源在这里先装好；rom_menu_pick()
      * 里还会再调一遍，都是幂等的，不会重复初始化出问题。
      *
-     * rom_store_init() 也提到这里先调一次：选 TEST 会在 rom_menu_pick()
-     * 之前就进 input_gamepad_show()，而摇杆诊断画面里的存储占用行
-     * 靠 rom_store_usage() 读数据——不提前调这一下，卡还没被扫过，
-     * 诊断画面只能显示 "SD CARD: N/A"。同样是幂等调用。 */
+     * WORDS 完全离线，不应该为了学单词先等一次 ROM 全盘扫描。因此先选模式，
+     * 只有 GAME/TEST 路径才初始化 ROM 目录；TEST 仍能在诊断画面看到存储占用。 */
     input_serial_init();
     input_usb_init();
     input_gamepad_init();
@@ -255,8 +264,14 @@ void app_main(void)
     if (refresh_rom_index) {
         ESP_LOGI(TAG, "检测到 SELECT，忽略 ROM 目录缓存并完整重扫");
     }
+    boot_mode_t boot_mode;
+    do {
+        boot_mode = boot_menu();
+        if (boot_mode == BOOT_MODE_WORDS) word_study_run();
+    } while (boot_mode == BOOT_MODE_WORDS);
+
     rom_store_init(refresh_rom_index);
-    if (boot_menu()) {
+    if (boot_mode == BOOT_MODE_TEST) {
         input_gamepad_show();
     }
 

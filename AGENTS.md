@@ -54,7 +54,9 @@ idf.py flash-roms                                          # 只在加/删顶层
 | `SCAN_PROFILE`（默认 0） | `main/rom_store.c` | 扫描分阶段计时（readdir / stat），定位扫描慢在哪 |
 | `OVERCLOCK_LEVEL`（默认 0，关闭） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过 |
 
-开机画面（`main.c`）现在会停下来问 GAME/TEST：选 TEST 才会进摇杆位置 +
+开机画面（`main.c`）现在会停下来问 GAME/WORDS/TEST：WORDS 进入苏州小学译林版
+三至六年级上/下册选择，再选择 Unit 1～8；每册进度按教材版本独立保存；
+选 TEST 才会进摇杆位置 +
 两路原始 ADC 值的诊断画面（`input_gamepad_show()`），不再是编译期开关。
 
 运行时核 0 每秒自报 `NES 60 fps (模拟+转换 8.1 ms/帧，CPU 余量 52%)`。
@@ -62,7 +64,9 @@ idf.py flash-roms                                          # 只在加/删顶层
 
 ## 架构
 
-启动链：`app_main`（main.c）→ `nes_emu_prealloc` → `display_init` → `rom_menu_pick` → 对应模拟器（不返回）。
+启动链：`app_main`（main.c）→ `nes_emu_prealloc` → `display_init` → GAME/WORDS/TEST；
+WORDS 在 `word_study_run()` 内可反复换年级、册次和单元，返回后回到开机模式选择；
+GAME/TEST 再进 `rom_menu_pick` → 对应模拟器（不返回）。
 
 ### 双核分工与「条带流式推屏」
 
