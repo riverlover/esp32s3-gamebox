@@ -15,13 +15,13 @@ ESP-IDF v5.4，纯 C，无测试套件 —— 验证靠烧板子 + 看串口输�
 . ~/esp/esp-idf/export.sh                                  # 每个新终端都要跑一次
 idf.py build
 idf.py -p /dev/cu.usbserial-A5069RR4 flash monitor         # 退出 monitor: Ctrl+]
-idf.py flash-roms                                          # 只在加/删顶层 roms/ 后跑
+idf.py flash-word-audio                                   # 只在教材词表/发音参数变化后跑
 ```
 
 - 端口是板载 FT232R（丝印 `COM` 的 Type-C 口）。`A5069RR4` 是这颗芯片的序列号，
   换板子会变，用 `ls /dev/cu.usbserial-*` 确认。
-- `flash-roms` 是顶层 `CMakeLists.txt` 注册的自定义 target，**故意不挂在 `idf.py flash` 上**：
-  ROM 分区 13 MB，Deflate 镜像目前几 MiB（随游戏增删浮动），烧一次仍较久，而它几乎从不变。
+- `flash-word-audio` 是顶层 `CMakeLists.txt` 注册的自定义 target，**故意不挂在 `idf.py flash` 上**：
+  英式发音包约 3.23 MiB，烧一次仍较久，而教材词表几乎不变。
   烧录时间只跟镜像实际字节数走（`esptool write_flash` 写的是文件），跟分区开多大无关。
 - `sdkconfig` 不入库，由 `sdkconfig.defaults` 生成。要固化配置就改 `.defaults`，
   别改 `sdkconfig`（会被覆盖）。
@@ -38,7 +38,7 @@ idf.py flash-roms                                          # 只在加/删顶层
 `main/CMakeLists.txt` 的 `EMBED_FILES` 引用了 5 个版权 ROM（`main/roms/{smb,tetris,contra,pacman,drmario}.nes`），
 它们在 `.gitignore` 里。自备文件放进去，或者把 `main/nes_emu.c` 顶部的 `ROM_CHOICE`
 改成 5/6/7（随仓库分发的公有领域测试 ROM）并从 `EMBED_FILES` 删掉缺失的行。
-顶层 `roms/`（给 `flash-roms` 用的本地游戏）同样不入库。
+顶层 `roms/` 是旧打包工具留下的本地游戏目录，不入库；运行时游戏只从 TF 卡读。
 
 ### 板上验证的诊断开关
 
@@ -65,7 +65,10 @@ idf.py flash-roms                                          # 只在加/删顶层
 ## 架构
 
 启动链：`app_main`（main.c）→ `nes_emu_prealloc` → `display_init` → GAME/WORDS/TEST；
-WORDS 在 `word_study_run()` 内可反复换年级、册次和单元，返回后回到开机模式选择；
+WORDS 在 `word_study_run()` 内可反复换年级、册次和单元；卡片正面自动播放英式发音，
+X 可重播，QUIZ 判题时答对/答错分别播放上升/下降 8-bit 掌机音效，顶部对应进度格
+同步变绿/红，一轮 8/8 在结果页播放专属过关短曲；返回后会释放 24 kHz I2S，
+再回到开机模式选择；
 GAME/TEST 再进 `rom_menu_pick`；游戏列表 B 返回平台页，平台页 B 返回开机模式选择，
 两页都用 X 调音量、Y 调背光；选定后进入对应模拟器（不返回）。
 
@@ -109,8 +112,9 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
 
 ### ROM 来源：TF 卡，编译期嵌入做回退
 
-**游戏全部从 TF 卡读**。flash 那个 13 MB `roms` 分区已经不再供 ROM 使用
-（`partitions.csv` 和 `tools/pack_roms.py` 暂时留着，等确定改作他用再处理）。
+**游戏全部从 TF 卡读**。原 13 MB `roms` 分区已经改为 `word_audio`，放
+`tools/build_word_audio.py` 生成的 Daniel（en_GB）离线发音包；`tools/pack_roms.py`
+只作为旧格式工具保留，不再接入构建。
 
 - 卡上随便怎么摆。`rom_store.c` 从 `/sd` 递归扫描（最多 4 层），认这些扩展名：
   `.nes .gb .gbc .sfc .smc .md .bin .zip`。前缀是 `.` / `_` / `removed` 的目录整棵跳过，
@@ -188,7 +192,7 @@ GPLv2-**only**（源文件无 or later）而 gwenesis 是 GPL v3+/AGPL v3，两�
 |---|---|
 | `DISP_FB_W` / `DISP_FB_H`（display.h） | `nes_emu.c` 的三个 `_Static_assert`；`display.c` 的 `BAND_LINES`（最好整除 `DISP_FB_H`） |
 | `DISP_H` | `DISP_GAP_Y` 一起改。只改一个的症状是画面偏移 + 有一条边永远刷不到 |
-| `partitions.csv` 的 roms offset | 顶层 `CMakeLists.txt` 的 `ROMS_OFFSET` |
+| `partitions.csv` 的 word_audio offset | 顶层 `CMakeLists.txt` 的 `WORD_AUDIO_OFFSET` |
 | `pack_roms.py` 的 `NAME_LEN` | `rom_store.h` 的 `ROM_STORE_NAME_LEN` |
 | 加 `main/roms/*.nes` | `main/CMakeLists.txt` 的 `EMBED_FILES` + `nes_emu.c` 的 `ROM_CHOICE` 分支和 `_binary_<名字>_nes_start` 符号名（非字母数字→下划线） |
 | 菜单要显示新汉字 | 不用管了：`main/menu_font.c` 收了 Unifont 的 95 个 8x16 ASCII 和 GB2312 全部 6763 个 16x16 汉字。真撞上 GB2312 之外的字（繁体、假名）才需要往 `tools/gen_menu_font.py` 的 `EXTRA_TEXT` 加一个字并重跑（要 unifont 源文件，不入库） |

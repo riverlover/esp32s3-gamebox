@@ -2,25 +2,22 @@
 #
 # Genesis 再加入一个完整 CPU / VDP / 双声音芯片核心后，1 MB app 已不可能容纳，
 # 所以 app 扩到 2 MB。尾部的 SNES 存档分区保持原地址，已有存档不会被搬动；
-# 相应地 roms 起点后移 1 MB、容量从 14 MB 缩到 13 MB。
+# 相应地 data 起点后移 1 MB、容量从 14 MB 缩到 13 MB。
 #
-# roms 分区放整个游戏库（Deflate 镜像目前几 MiB，随增删游戏浮动），并留出余量。
-# 里面不是文件系统，
-# 是 tools/pack_roms.py 生成的自定义镜像：一张定长目录表 + 拼接的 ROM 数据。
-# 这样 main/rom_store.c 能直接 mmap，ROM 指针原样喂给 nofrendo，走的还是
-# flash cache —— 和以前 EMBED_FILES 的路径一样快，也不多占一分 RAM。
+# 游戏已全部从 TF 卡加载，这块 data 分区改放 WORDS 的离线英式发音包。
+# 里面不是文件系统，是 tools/build_word_audio.py 生成的定长索引 + IMA ADPCM；
+# main/word_audio.c 每次只读 256 字节并流式解码，不会把整个语音包复制进 RAM。
 #
 # 子类型 0x40 是「自定义 data」，故意不用 spiffs/littlefs：那些子类型会让
 # 工具链以为该跑文件系统检查。0x40 落在 IDF 给应用自定义留的范围里。
 #
-# roms 里的卡带各自使用 raw Deflate；加入 4 MiB Sonic 后仍能放进 13 MB。
-# flash-roms 写的是镜像实际字节数，不会因为分区预留空间而增加烧录时间。
+# flash-word-audio 写的是镜像实际字节数，不会因为分区预留 13 MB 而增加烧录时间。
 #
-# roms 止于 0xF10000；尾部 960 KB 全部给 SMW 即时存档。FAT 让 Snes9x 现成的
+# word_audio 止于 0xF10000；尾部 960 KB 全部给 SMW 即时存档。FAT 让 Snes9x 现成的
 # stdio 快照接口可以直接使用，wear levelling 避免每次都擦写同一组物理扇区。
 # Name,     Type, SubType, Offset,   Size
 nvs,        data, nvs,     0x9000,   0x6000
 phy_init,   data, phy,     0xf000,   0x1000
 factory,    app,  factory, 0x10000,  0x200000
-roms,       data, 0x40,    0x210000, 0xD00000
+word_audio, data, 0x40,    0x210000, 0xD00000
 snes_save,  data, fat,     0xF10000, 0x0F0000

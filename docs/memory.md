@@ -60,27 +60,24 @@ Snes9x 的 `Memory.SRAM` 是被模拟卡带的电池存档 RAM，只是一个 64
 
 ## 3. 16 MiB Flash 怎么使用
 
-Flash 和 PSRAM 是两套独立资源。ROM 分区的 mmap 只消耗 Flash 地址映射窗口和少量页表，
-不会把整个 ROM 镜像复制到 PSRAM；选中游戏后只解压那一个 ROM。
+Flash 和 PSRAM 是两套独立资源。游戏已经全部从 TF 卡装载；原 ROM data 分区
+改为单词英式发音包，播放时只流式读取很小的 ADPCM 块。
 
 | 分区 | 起点 | 分配大小 | 当前用途 |
 |---|---:|---:|---|
 | NVS | `0x009000` | 24 KiB | ESP-IDF 预留的持久配置空间 |
 | PHY init | `0x00F000` | 4 KiB | ESP-IDF PHY 数据 |
 | factory app | `0x010000` | 2 MiB | 含 Gwenesis 的固件约 1.55 MiB，余约 457 KiB |
-| roms | `0x210000` | 13 MiB | 27 个 ROM；19.16 MiB 原始数据压成约 10.61 MiB |
+| word_audio | `0x210000` | 13 MiB | 468 个英式发音；24 kHz IMA ADPCM 约 3.23 MiB |
 | snes_save | `0xF10000` | 960 KiB | SMW 即时存档，FAT + wear levelling |
 
-`roms` 分区止于 `0xF10000`，其后的 960 KiB 已全部分给 `snes_save`。ROM 镜像只在
-加、删或替换游戏时用 `idf.py flash-roms` 单独烧录，普通 `idf.py flash` 不更新它；
+`word_audio` 分区止于 `0xF10000`，其后的 960 KiB 已全部分给 `snes_save`。语音包只在
+教材词表或合成参数变化时用 `idf.py flash-word-audio` 单独烧录，普通 `idf.py flash` 不更新它；
 普通烧固件会更新分区表，但不会主动擦除已有的存档分区。
 
-新镜像把每个游戏独立保存为 raw Deflate，菜单阶段只读 mmap 目录；NES、GB/GBC、Genesis 在
-确认后把选中的 ROM 解到 PSRAM，核心的 bank 指针长期引用这块缓冲。SNES 的装载流程
-还会就地改写映射区域，因此先释放 Snes9x 贪心申请的 6 MiB ROM 缓冲，再直接解压到
-带映射余量的最终缓冲；不能先解压一份再复制，否则 4 MiB 卡带会耗尽 8 MiB PSRAM。
-Genesis 的 68000 核会原地交换 ROM 字节序，因此即使某条 ROM 压缩后没有变小，也会
-强制复制到可写 PSRAM，绝不修改 flash mmap。
+发音索引只有约 7.5 KiB，进入 WORDS 后放在 PSRAM；每次从 flash 读取 256 字节，
+解码成 20 ms PCM 包送公共 I2S。返回首页时释放索引、播放任务和 I2S，随后进入
+Genesis 才能按它自己的约 26.4 kHz 重新配置，不能让 WORDS 的 24 kHz 通道常驻。
 
 SMW 单份未压缩即时状态固定为 365,120 字节（356.6 KiB）。存档层使用两个交替文件：
 写新槽期间保留上一槽，完整关闭文件、重新读取并校验 CRC 后才提交元数据。RST 或断电

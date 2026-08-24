@@ -27,6 +27,7 @@
 #include "input_usb.h"
 #include "word_study.h"
 #include "word_study_data.h"
+#include "word_audio.h"
 
 static const char *TAG = "words";
 
@@ -53,6 +54,7 @@ typedef struct {
 typedef struct {
     int word[SESSION_WORDS];
     int quiz_order[SESSION_WORDS];
+    int8_t quiz_result[SESSION_WORDS];  /* -1=未答，0=错，1=对；只服务本轮顶部进度条 */
 } study_session_t;
 
 typedef enum {
@@ -78,6 +80,7 @@ typedef struct {
     int correct_slot;
     int answered;            /* -1=未作答，0=错，1=对 */
     bool storage_ok;
+    bool audio_ok;
 } view_t;
 
 static nvs_handle_t s_nvs;
@@ -172,7 +175,13 @@ static void draw_card_header(const view_t *view, const char *title)
 {
     text_center_latin_16(7, title, C_GB3, 1);
     for (int i = 0; i < SESSION_WORDS; i++) {
-        uint16_t color = i < view->pos ? C_GOLD : (i == view->pos ? C_GB3 : C_GB1);
+        uint16_t color;
+        if (view->kind == VIEW_QUIZ && view->session->quiz_result[i] >= 0) {
+            /* 判题后当前格立即落色，孩子不用等到下一题才看到结果。 */
+            color = view->session->quiz_result[i] ? C_OK : C_BAD;
+        } else {
+            color = i < view->pos ? C_GOLD : (i == view->pos ? C_GB3 : C_GB1);
+        }
         display_fill_rect(71 + i * 19, 31, 13, 4, color);
     }
     display_hline(18, 42, DISP_FB_W - 36, C_GB2);
@@ -252,7 +261,9 @@ static void draw_home(const view_t *view)
     snprintf(line, sizeof(line), "已学习 %d/8   已掌握 %d/8", learned, mastered);
     text_center_16(124, line, C_GB2);
     text_center_16(149, "本轮学习教材顺序中的8个词", C_GB2);
-    if (!view->storage_ok) {
+    if (!view->audio_ok) {
+        text_center_16(176, "英式发音包未安装 学习仍可继续", C_BAD);
+    } else if (!view->storage_ok) {
         text_center_16(176, "进度仅在本次开机有效", C_BAD);
     }
     text_center_16(199, "A 开始   B 换单元", C_GB3);
@@ -274,12 +285,14 @@ static void draw_card(const view_t *view)
     if (view->kind == VIEW_CARD_FRONT) {
         text_center_16(132, "先猜一猜它的意思", C_GB2);
         text_center_16(160, "想好后按 A 翻开", C_GB3);
-        text_center_16(199, "A 翻开   SELECT 返回", C_GB3);
+        text_center_16(199, view->audio_ok ? "A 翻开  X 发音  SELECT 返回"
+                                           : "A 翻开   SELECT 返回", C_GB3);
     } else {
         snprintf(line, sizeof(line), "意思: %s", word->meaning);
         text_center_16(124, line, C_GB3);
         text_center_16(153, "看英文说中文 再大声读3遍", C_GB2);
-        text_center_16(199, "A 下一张   B 再想想", C_GB3);
+        text_center_16(199, view->audio_ok ? "A 下一张  B 再想  X 发音"
+                                           : "A 下一张   B 再想想", C_GB3);
     }
 }
 
@@ -318,7 +331,8 @@ static void draw_quiz(const view_t *view)
     }
 
     if (view->answered < 0) {
-        text_center_16(199, "上下选择   A 确认", C_GB3);
+        text_center_16(199, view->audio_ok ? "上下选择  A 确认  X 发音"
+                                           : "上下选择   A 确认", C_GB3);
     } else if (view->answered) {
         text_center_16(199, "答对了!   A 继续", C_OK);
     } else {
@@ -434,6 +448,7 @@ static void session_build(study_session_t *session, int unit)
     for (int i = 0; i < SESSION_WORDS; i++) {
         session->word[i] = first + i;
         session->quiz_order[i] = i;
+        session->quiz_result[i] = -1;
     }
     for (int i = SESSION_WORDS - 1; i > 0; i--) {
         int j = random_next() % (i + 1);
@@ -477,6 +492,8 @@ static bool run_session(study_progress_t *progress, view_t *view)
         view->pos = pos;
         view->kind = VIEW_CARD_FRONT;
         render(view);
+        int deck_index = session.word[pos];
+        word_audio_play(view->deck->words[deck_index].word);
         uint16_t prev = poll_input();
         bool revealed = false;
         while (1) {
@@ -484,6 +501,9 @@ static bool run_session(study_progress_t *progress, view_t *view)
             uint16_t now = poll_input();
             uint16_t edge = now & ~prev;
             prev = now;
+            if (edge & GAMEPAD_BIT_X) {
+                word_audio_play(view->deck->words[deck_index].word);
+            }
             if (edge & NES_PAD_SELECT) {
                 return false;
             }
@@ -509,6 +529,7 @@ static bool run_session(study_progress_t *progress, view_t *view)
         view->answered = -1;
         quiz_options(&session, pos, view);
         render(view);
+        int quiz_deck_index = session.word[session.quiz_order[pos]];
 
         uint16_t prev = poll_input();
         while (1) {
@@ -516,6 +537,9 @@ static bool run_session(study_progress_t *progress, view_t *view)
             uint16_t now = poll_input();
             uint16_t edge = now & ~prev;
             prev = now;
+            if (edge & GAMEPAD_BIT_X) {
+                word_audio_play(view->deck->words[quiz_deck_index].word);
+            }
             if (edge & NES_PAD_SELECT) {
                 if (dirty) progress_save(progress, view->deck);
                 return false;
@@ -529,6 +553,7 @@ static bool run_session(study_progress_t *progress, view_t *view)
                 int deck_index = session.word[session_pos];
                 bool correct = view->selected == view->correct_slot;
                 view->answered = correct ? 1 : 0;
+                session.quiz_result[pos] = correct ? 1 : 0;
                 if (correct) {
                     view->score++;
                     if (progress->level[deck_index] < 3) progress->level[deck_index]++;
@@ -536,6 +561,7 @@ static bool run_session(study_progress_t *progress, view_t *view)
                     progress->level[deck_index] = progress->level[deck_index] > 1
                                                 ? progress->level[deck_index] - 1 : 1;
                 }
+                word_audio_play_quiz_result(correct);
                 dirty = true;
                 render(view);
             } else if (view->answered >= 0 && (edge & (NES_PAD_A | NES_PAD_START))) {
@@ -548,6 +574,7 @@ static bool run_session(study_progress_t *progress, view_t *view)
     progress_save(progress, view->deck);
     view->kind = VIEW_RESULT;
     render(view);
+    if (view->score == SESSION_WORDS) word_audio_play_quiz_perfect();
     return true;
 }
 
@@ -559,6 +586,7 @@ static void run_unit(const study_deck_t *deck, int unit, study_progress_t *progr
         .progress = progress,
         .unit = unit,
         .storage_ok = s_storage_ok,
+        .audio_ok = word_audio_is_available(),
     };
 
     while (1) {
@@ -652,6 +680,7 @@ void word_study_run(void)
 {
     s_rng = (uint32_t)esp_timer_get_time() ^ 0xA53C9E17u;
     if (!s_rng) s_rng = 1;
+    (void)word_audio_init();
 
     view_t view = {
         .kind = VIEW_SELECT,
@@ -667,7 +696,10 @@ void word_study_run(void)
             uint16_t now = poll_input();
             uint16_t edge = now & ~prev;
             prev = now;
-            if (edge & (NES_PAD_B | NES_PAD_SELECT)) return;
+            if (edge & (NES_PAD_B | NES_PAD_SELECT)) {
+                word_audio_shutdown();
+                return;
+            }
             if (edge & (NES_PAD_LEFT | NES_PAD_RIGHT)) {
                 view.selected ^= 1;
                 render(&view);

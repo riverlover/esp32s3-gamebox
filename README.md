@@ -42,7 +42,11 @@ ESP32-S3-DevKitC-1 兼容板（N16R8）+ ST7789 SPI 屏（240×320，横屏 320�
       软重启回到 ROM 选单。没有模拟器落盘卡带电池 SRAM，重启不丢数据
 - [x] 苏州小学译林版单词学习：三至六年级按上/下册选择，每册 8 单元 × 8 个
       第一阶段核心词；可选单元进行认读和测验，每册用独立 NVS 键保存掌握进度
-- [x] 27 款游戏逐条 Deflate 后镜像约 10.61 MiB；ROM 分区 13 MiB
+- [x] WORDS 离线英式发音：Daniel（en_GB）首次自动读、X 重播；468 个不重复
+      词条压成 3.23 MiB IMA ADPCM，语音包缺失时学习功能仍可用
+- [x] WORDS QUIZ 即时声音反馈：答对播放四级上升 8-bit 琶音，答错播放三级
+      下降掌机提示音；一轮 8/8 在结果页播放专属过关短曲
+- [x] WORDS QUIZ 顶部逐题反馈：答对格变绿、答错格变红，未答题保持原高亮
 
 ROM 说明：商业 NES/GB/GBC/SNES/Genesis ROM 都是版权物，**本仓库不包含**，需由使用者自备。
 随仓库分发的三个 `.nes` 是 nofrendo 测试套件里的公有领域 homebrew，用于验证。
@@ -54,11 +58,13 @@ ROM 说明：商业 NES/GB/GBC/SNES/Genesis ROM 都是版权物，**本仓库不
 | `main/main.c` | 启动流程：板级信息 → 初始化屏 → GAME / WORDS / TEST 分流 |
 | `main/word_study.c` | 教材/单元选择、8 词认读/三选一测验与分册 NVS 进度 |
 | `main/word_study_data.c` | 译林版三至六年级上下册的版本、单元和第一阶段核心词 |
+| `main/word_audio.c` | 读取独立分区中的英式发音索引，流式解码 IMA ADPCM 并异步播放 |
+| `tools/build_word_audio.py` | 用 macOS Daniel 语音生成 24 kHz 英式发音包 |
 | `main/display.c` | ST7789 显示层。条带流式推屏 + 核 1 推屏任务，对上层只暴露「按条带填像素」 |
 | `main/nes_emu.c` | 适配层。把 nofrendo 的 8 位调色板画面逐条带转成 RGB565 推屏 |
 | `main/gbc_emu.c` | GB/GBC 适配层。把 160×144 大端 RGB565 等比放大到 240×216，并接入公共输入/音频 |
 | `main/genesis_emu.c` | retro-go Gwenesis 单核宿主层。320×241 索引帧以原生 320×224 送屏，并混合 YM2612/PSG 音频 |
-| `roms/` | 本地游戏库；`.nes/.gb/.gbc/.sfc/.smc/.md/.bin` 会逐条压缩进 ROM 分区镜像，不入库 |
+| TF 卡 `/roms/` | 本地游戏库；支持 `.nes/.gb/.gbc/.sfc/.smc/.md/.bin/.zip`，不入库 |
 | `main/roms/` | 内置 ROM（公有领域测试 ROM） |
 | `components/nofrendo/` | NES 模拟器核心，取自 [retro-go](https://github.com/ducalex/retro-go)，**未改动源码** |
 | `components/gnuboy/` | GB/GBC 模拟器核心，取自 Retro-Go；宿主适配放在 `main/` |
