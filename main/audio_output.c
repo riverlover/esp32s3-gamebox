@@ -322,9 +322,14 @@ void audio_output_shutdown(void)
 
     /* 队列可能正塞着 80 ms 的语音。先清空再送零长度哨兵，才能保证消费任务
      * 很快退出；直接删任务有机会把它截在 i2s_channel_write() 内部并留下锁。 */
-    audio_packet_t stop = { .sample_count = 0 };
+    /* audio_packet_t 含 528 帧立体声，整个对象约 2.1 KB。这里若在调用栈上
+     * 临时创建，app_main -> word_study_run -> word_audio_shutdown 的嵌套栈
+     * 会超过主任务仅有的 3584 字节，按 B 退出 WORDS 时直接触发栈溢出重启。
+     * 单词播放任务已经先退出，此时没有生产者会再碰这个全局包，复用它发送
+     * 零长度哨兵既不增加常驻内存，也不再消耗主任务栈。 */
+    s_producer_packet.sample_count = 0;
     xQueueReset(s_queue);
-    if (xQueueSend(s_queue, &stop, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (xQueueSend(s_queue, &s_producer_packet, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(1500)) != pdTRUE) {
             ESP_LOGE(TAG, "音频任务停止超时，保留 I2S 避免在写入中强拆");
             return;
