@@ -570,6 +570,40 @@ void display_text_16(int x, int y, const char *s, uint16_t color)
     }
 }
 
+void display_text_ascii_16_scaled(int x, int y, const char *s,
+                                  uint16_t color, int scale)
+{
+    if (scale < 1) scale = 1;
+
+    int cx = x;
+    while (*s) {
+        uint32_t codepoint = utf8_next(&s);
+        const uint8_t *ascii = menu_font_ascii_glyph(codepoint);
+        for (int row = 0; row < 16; row++) {
+            uint8_t bits = ascii[row];
+            for (int col = 0; col < 8; col++) {
+                if (bits & (0x80u >> col)) {
+                    display_fill_rect(cx + col * scale, y + row * scale,
+                                      scale, scale, color);
+                }
+            }
+        }
+        cx += 9 * scale;
+    }
+}
+
+int display_text_width_ascii_16_scaled(const char *s, int scale)
+{
+    if (scale < 1) scale = 1;
+
+    int width = 0;
+    while (*s) {
+        (void)utf8_next(&s);
+        width += 9 * scale;
+    }
+    return width;
+}
+
 int display_text_width_16(const char *s)
 {
     int width = 0;

@@ -166,29 +166,83 @@ typedef enum {
     BOOT_MODE_COUNT,
 } boot_mode_t;
 
+static void boot_text_center_ascii(int y, const char *text, uint16_t color, int scale)
+{
+    int width = (int)strlen(text) * 6 * scale;
+    display_text((DISP_FB_W - width) / 2, y, text, color, scale);
+}
+
+static void boot_draw_icon(boot_mode_t mode, int cx, int y, uint16_t color)
+{
+    if (mode == BOOT_MODE_GAME) {
+        /* 小手柄：十字键和两颗面键比文字更快让孩子认出“游戏”。 */
+        display_rect(cx - 21, y + 3, 42, 23, color);
+        display_fill_rect(cx - 14, y + 12, 13, 3, color);
+        display_fill_rect(cx - 9, y + 7, 3, 13, color);
+        display_fill_rect(cx + 7, y + 9, 4, 4, color);
+        display_fill_rect(cx + 13, y + 15, 4, 4, color);
+    } else if (mode == BOOT_MODE_WORDS) {
+        /* 打开的书，中缝留一列底色，缩到 86px 卡片里仍然看得清。 */
+        display_rect(cx - 21, y + 2, 20, 25, color);
+        display_rect(cx + 1, y + 2, 20, 25, color);
+        display_fill_rect(cx - 16, y + 8, 11, 2, color);
+        display_fill_rect(cx + 5, y + 8, 11, 2, color);
+        display_fill_rect(cx - 16, y + 14, 11, 2, color);
+        display_fill_rect(cx + 5, y + 14, 11, 2, color);
+    } else {
+        /* 摇杆诊断用准星表达“检查/校准”，和 TEST 的实际页面一致。 */
+        display_rect(cx - 16, y + 2, 32, 25, color);
+        display_hline(cx - 11, y + 14, 22, color);
+        display_fill_rect(cx - 1, y + 7, 3, 15, color);
+        display_fill_rect(cx - 4, y + 11, 9, 7, color);
+    }
+}
+
 static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
+    (void)strip;
+    (void)y0;
+    (void)h;
     const int *selected = ctx;
-    splash_frame_common();
-
     static const char *labels[BOOT_MODE_COUNT] = { "GAME", "WORDS", "TEST" };
-    const int char_w = 6 * 2;               /* scale 2 */
-    static const int chars[BOOT_MODE_COUNT] = { 4, 5, 4 };
-    const int gap = 12;
-    int total_w = (chars[0] + chars[1] + chars[2]) * char_w + gap * 2;
-    int x = (DISP_FB_W - total_w) / 2;
-    const int y = 168;
+    static const char *descriptions[BOOT_MODE_COUNT] = {
+        "选择并启动游戏", "按教材学习单词", "检查摇杆与按键"
+    };
+
+    display_clear(C_GB0);
+    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_GB2);
+    boot_text_center_ascii(9, "GAMEBOX", C_GB3, 3);
+    boot_text_center_ascii(38, "PLAY  LEARN  EXPLORE", C_GB2, 1);
+    display_hline(24, 55, DISP_FB_W - 48, C_GB2);
+    int choose_w = display_text_width_16("选择模式");
+    display_text_16((DISP_FB_W - choose_w) / 2, 64, "选择模式", C_GB3);
 
     for (int i = 0; i < BOOT_MODE_COUNT; i++) {
-        int word_w = chars[i] * char_w;
-        if (i == *selected) {
-            display_fill_rect(x - 6, y - 3, word_w + 12, 7 * 2 + 6, C_GB2);
-            display_text(x, y, labels[i], C_GB0, 2);
-        } else {
-            display_text(x, y, labels[i], C_GB2, 2);
-        }
-        x += word_w + gap;
+        const int card_w = 86;
+        const int card_h = 68;
+        int x = 8 + i * 93;
+        int cx = x + card_w / 2;
+        bool active = i == *selected;
+        uint16_t color = active ? C_GB0 : C_GB2;
+
+        if (active) display_fill_rect(x, 87, card_w, card_h, C_GB2);
+        display_rect(x, 87, card_w, card_h, active ? C_GB3 : C_GB2);
+        boot_draw_icon((boot_mode_t)i, cx, 94, color);
+
+        int label_w = (int)strlen(labels[i]) * 6 * 2;
+        display_text(cx - label_w / 2, 132, labels[i], color, 2);
     }
+
+    int desc_w = display_text_width_16(descriptions[*selected]);
+    display_text_16((DISP_FB_W - desc_w) / 2, 166,
+                    descriptions[*selected], C_GB3);
+    for (int i = 0; i < BOOT_MODE_COUNT; i++) {
+        display_fill_rect(124 + i * 16, 188, 8, 4,
+                          i == *selected ? C_GB3 : C_GB1);
+    }
+    int footer_w = display_text_width_16("左右选择  A确认");
+    display_text_16((DISP_FB_W - footer_w) / 2, 204,
+                    "左右选择  A确认", C_GB2);
 }
 
 static boot_mode_t boot_menu(void)

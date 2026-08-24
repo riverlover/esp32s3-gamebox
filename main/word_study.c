@@ -119,11 +119,28 @@ static void text_center_16_box(int x, int w, int y, const char *s, uint16_t colo
     display_text_16(x + (w - display_text_width_16(s)) / 2, y, s, color);
 }
 
-static int fit_ascii_scale(const char *s, int maximum)
+static void text_center_latin_16(int y, const char *s, uint16_t color, int scale)
 {
-    int scale = maximum;
-    while (scale > 1 && ascii_width(s, scale) > DISP_FB_W - 28) scale--;
-    return scale;
+    int width = display_text_width_ascii_16_scaled(s, scale);
+    display_text_ascii_16_scaled((DISP_FB_W - width) / 2, y, s, color, scale);
+}
+
+static void draw_study_word(const char *s, int center_y, int maximum_scale)
+{
+    int scale = maximum_scale;
+    while (scale > 1 &&
+           display_text_width_ascii_16_scaled(s, scale) > DISP_FB_W - 28) {
+        scale--;
+    }
+
+    int width = display_text_width_ascii_16_scaled(s, scale);
+    int x = (DISP_FB_W - width) / 2;
+    int y = center_y - 8 * scale;
+    int shadow = scale > 1 ? 2 : 1;
+
+    /* 浅色阴影把深色主字从 DMG 绿背景里托起来，但仍保持像素掌机风格。 */
+    display_text_ascii_16_scaled(x + shadow, y + shadow, s, C_GB1, scale);
+    display_text_ascii_16_scaled(x, y, s, C_GB3, scale);
 }
 
 static void draw_frame(void)
@@ -153,7 +170,7 @@ static int count_unit_level(const study_progress_t *progress, int unit, int mini
 
 static void draw_card_header(const view_t *view, const char *title)
 {
-    text_center_ascii(8, title, C_GB3, 2);
+    text_center_latin_16(7, title, C_GB3, 1);
     for (int i = 0; i < SESSION_WORDS; i++) {
         uint16_t color = i < view->pos ? C_GOLD : (i == view->pos ? C_GB3 : C_GB1);
         display_fill_rect(71 + i * 19, 31, 13, 4, color);
@@ -165,7 +182,7 @@ static void draw_select(const view_t *view)
 {
     char line[40];
     draw_frame();
-    text_center_ascii(10, "YILIN ENGLISH", C_GB3, 2);
+    text_center_latin_16(10, "YILIN ENGLISH", C_GB3, 1);
     text_center_16(37, "苏州小学 选择教材", C_GB2);
 
     for (int i = 0; i < STUDY_DECK_COUNT; i++) {
@@ -223,7 +240,7 @@ static void draw_home(const view_t *view)
     int mastered = count_unit_level(view->progress, view->unit, 3);
 
     draw_frame();
-    text_center_ascii(12, "WORD QUEST", C_GB3, 3);
+    draw_study_word("WORD QUEST", 26, 2);
     snprintf(line, sizeof(line), "%d年级 %s册  %s", view->deck->grade,
              view->deck->upper ? "上" : "下", view->deck->revision);
     text_center_16(50, line, C_GB2);
@@ -245,7 +262,6 @@ static void draw_card(const view_t *view)
 {
     int deck_index = view->session->word[view->pos];
     const study_word_t *word = &view->deck->words[deck_index];
-    int scale = fit_ascii_scale(word->word, 4);
     char line[40];
 
     draw_frame();
@@ -253,7 +269,7 @@ static void draw_card(const view_t *view)
     snprintf(line, sizeof(line), "Unit %d  %s", word->unit + 1,
              view->deck->unit_titles[word->unit]);
     text_center_16(50, line, C_GB2);
-    text_center_ascii(77, word->word, C_GB3, scale);
+    draw_study_word(word->word, 94, 3);
 
     if (view->kind == VIEW_CARD_FRONT) {
         text_center_16(132, "先猜一猜它的意思", C_GB2);
@@ -271,13 +287,12 @@ static void draw_quiz(const view_t *view)
 {
     int deck_index = view->session->word[view->session->quiz_order[view->pos]];
     const study_word_t *word = &view->deck->words[deck_index];
-    int scale = fit_ascii_scale(word->word, 3);
     char line[40];
 
     draw_frame();
     draw_card_header(view, "QUIZ");
-    text_center_ascii(50, word->word, C_GB3, scale);
-    text_center_16(78, "选出正确的中文意思", C_GB2);
+    draw_study_word(word->word, 61, 2);
+    text_center_16(80, "选出正确的中文意思", C_GB2);
 
     for (int i = 0; i < 3; i++) {
         int y = 103 + i * 29;
@@ -317,7 +332,7 @@ static void draw_result(const view_t *view)
     int mastered = count_unit_level(view->progress, view->unit, 3);
 
     draw_frame();
-    text_center_ascii(16, "ROUND COMPLETE", C_GB3, 2);
+    text_center_latin_16(15, "ROUND COMPLETE", C_GB3, 1);
     text_center_16(52, "本轮得分", C_GB2);
     snprintf(line, sizeof(line), "%d / %d", view->score, SESSION_WORDS);
     text_center_ascii(76, line, view->score >= 6 ? C_OK : C_GB3, 4);

@@ -199,3 +199,9 @@ void display_text(int x, int y, const char *s, uint16_t color, int scale);
  * 两种字形基线和高度一致；宽度函数与绘制使用完全相同的 UTF-8/fallback 规则。 */
 void display_text_16(int x, int y, const char *s, uint16_t color);
 int display_text_width_16(const char *s);
+
+/* 英文学习卡的大字：沿用清晰的 Unifont 8x16 半角字形，再做整数倍放大。
+ * 和 display_text() 的 5x7 放大字相比，升部、降部和曲线细节都更完整。 */
+void display_text_ascii_16_scaled(int x, int y, const char *s,
+                                  uint16_t color, int scale);
+int display_text_width_ascii_16_scaled(const char *s, int scale);
