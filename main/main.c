@@ -264,23 +264,26 @@ void app_main(void)
     if (refresh_rom_index) {
         ESP_LOGI(TAG, "检测到 SELECT，忽略 ROM 目录缓存并完整重扫");
     }
-    boot_mode_t boot_mode;
-    do {
-        boot_mode = boot_menu();
-        if (boot_mode == BOOT_MODE_WORDS) word_study_run();
-    } while (boot_mode == BOOT_MODE_WORDS);
-
-    rom_store_init(refresh_rom_index);
-    if (boot_mode == BOOT_MODE_TEST) {
-        input_gamepad_show();
-    }
-
     /* 开机选单只返回目录项；各模拟器在自己的大块内存准备妥当后再从卡上读，
      * SNES 尤其不能先读出 4 MiB 再复制一份，否则 8 MiB PSRAM 会在峰值时耗尽。
      * 卡不可用时 entry 留 NULL，NES 继续走编译期嵌入 ROM 的回退路径。 */
     const rom_store_entry_t *entry = NULL;
     uint16_t launch_keys = 0;
-    rom_menu_pick(&entry, &launch_keys);
+    while (1) {
+        boot_mode_t boot_mode = boot_menu();
+        if (boot_mode == BOOT_MODE_WORDS) {
+            word_study_run();
+            continue;
+        }
+
+        rom_store_init(refresh_rom_index);
+        refresh_rom_index = false;  /* 同一次开机只强制重扫一次，返回菜单不再重扫 */
+        if (boot_mode == BOOT_MODE_TEST) input_gamepad_show();
+
+        rom_menu_result_t menu_result = rom_menu_pick(&entry, &launch_keys);
+        if (menu_result == ROM_MENU_BACK) continue;
+        break;  /* 已选游戏，或目录不可用而回退到内置 NES */
+    }
 
     /* ZIP 为了开机快只登记外层文件名，到玩家真正选择时才读一次内部目录。 */
     rom_store_entry_t resolved;

@@ -3,17 +3,16 @@
  *
  * ---- 两级结构 ----
  *
- * 分类页（选平台）--A--> 游戏列表（选游戏）--A--> 启动
- *      ^                      |
- *      +----------B-----------+
+ * 开机页 <--B-- 分类页（选平台）--A--> 游戏列表（选游戏）--A--> 启动
+ *                  ^                      |
+ *                  +----------B-----------+
  *
  * 两页共用同一个轮询循环、同一份边沿检测和同一个条带回调，差别只有标题、
- * 页脚、要不要画页码和音量这几项 —— 所以不写两套 draw_strip，由 draw_*()
+ * 页脚和要不要画页码 —— 所以不写两套 draw_strip，由 draw_*()
  * 各自填好一份 draw_args_t 快照，回调照着画就行。
  *
- * B 在两页含义不同：分类页是顶层，没有上一级可退，B 空着正好继续当音量键；
- * 游戏列表里 B 才是返回。两页的页脚各自写明自己的键，不会看错。音量因此
- * 只能在分类页调 —— 开机必然经过那一页，真要中途改也可以 B 退回去。
+ * B 在两页都只有“返回上一级”一个含义，避免孩子记两套规则。X 在两页都调
+ * 音量，Y 在两页都调背光；这些设置只对本次开机有效。
  *
  * ---- 布局 ----
  *
@@ -58,8 +57,8 @@ static const char *TAG = "menu";
 #define FOOTER_LINE_Y  204
 #define FOOTER_Y       207
 #define TEXT_X         8       /* 文字左缩进 */
-/* 同高字体里中文步进 17px、ASCII 步进 9px。分类页标题后依次放声音/亮度；
- * 游戏页没有声音，亮度结尾停在 224px，右侧仍放得下最长 5 字符页码。 */
+/* 同高字体里中文步进 17px、ASCII 步进 9px。标题后依次放声音/亮度，
+ * 右侧仍放得下最长 5 字符页码。 */
 #define SOUND_X        82
 #define BRIGHT_X       154
 #define HL_PAD         2       /* 反白块比文字左右各多出这么多 */
@@ -88,7 +87,6 @@ typedef struct {
 typedef struct {
     const char *title;
     const char *footer;
-    bool  show_volume;      /* 游戏列表把 B 让给了「返回」，那页不显示音量 */
     int   volume;
     int   backlight;
     int   page;             /* 0 基；page_count <= 1 时整个页码都不画 */
@@ -121,11 +119,9 @@ static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
 
     display_text_16(TEXT_X, TITLE_Y, a->title, C_GB3);
 
-    if (a->show_volume) {
-        char vol_text[16];
-        snprintf(vol_text, sizeof(vol_text), "声音:%d", a->volume);
-        display_text_16(SOUND_X, PAGE_Y, vol_text, C_GB2);
-    }
+    char vol_text[16];
+    snprintf(vol_text, sizeof(vol_text), "声音:%d", a->volume);
+    display_text_16(SOUND_X, PAGE_Y, vol_text, C_GB2);
     char bl_text[16];
     snprintf(bl_text, sizeof(bl_text), "亮度:%d", a->backlight);
     display_text_16(BRIGHT_X, PAGE_Y, bl_text, C_GB2);
@@ -204,8 +200,7 @@ static void draw_categories(const category_t *cats, int cat_count, int sel)
 {
     draw_args_t a = {
         .title       = "平台选择",
-        .footer      = "A进入  B声音  Y亮度",
-        .show_volume = true,
+        .footer      = "A进入 B返回 X声音 Y亮度",
         .volume      = audio_output_get_volume(),
         .backlight   = display_get_backlight(),
         .page        = 0,
@@ -231,8 +226,8 @@ static void draw_games(int count, const category_t *cat, int sel)
     draw_args_t a = {
         /* 标题就是平台名，所以行里不再重复画平台徽标，省下的宽度给名字。 */
         .title       = system_name(cat->system),
-        .footer      = "A开始  B返回  Y亮度  左右翻页",
-        .show_volume = false,
+        .footer      = "A开始 B返回 X声音 Y亮度 左右翻页",
+        .volume      = audio_output_get_volume(),
         .backlight   = display_get_backlight(),
         .page        = page,
         .page_count  = (cat->count + PAGE_ROWS - 1) / PAGE_ROWS,
@@ -257,19 +252,19 @@ static void draw_games(int count, const category_t *cat, int sel)
     display_stream_sync(draw_strip, &a);
 }
 
-bool rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
+rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
 {
     int count = rom_store_init(false);
     if (count <= 0) {
         ESP_LOGW(TAG, "TF 卡上没有游戏，用编译期嵌入的那个");
-        return false;
+        return ROM_MENU_FALLBACK;
     }
 
     category_t cats[SYSTEM_COUNT];
     int cat_count = build_categories(count, cats, SYSTEM_COUNT);
     if (cat_count <= 0) {       /* count > 0 就不该发生，稳妥起见 */
         ESP_LOGW(TAG, "目录里一个平台都认不出来，用编译期嵌入的那个");
-        return false;
+        return ROM_MENU_FALLBACK;
     }
 
     /* 三路输入并存：飞线手柄、USB HID、串口调试键盘。init 都是幂等的，
@@ -279,7 +274,7 @@ bool rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
     input_gamepad_init();
 
     printf("\n开机选单：%d 个游戏，%d 个平台。\n", count, cat_count);
-    printf("摇杆上下选，A 进入/确认，B 返回上一级。\n");
+    printf("摇杆上下选，A 进入/确认，B 返回上一级，X 调声音。\n");
     printf("（想换游戏按板子上的 RST 重启）\n\n");
 
     int cat = 0;
@@ -298,12 +293,19 @@ bool rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
 
         bool dirty = false;
 
-        /* Y 调背光，10% 一档循环，最暗 5%——不设到 0 是不想让屏幕全黑
+        /* X 调音量、Y 调背光，两页语义完全一致。音量到 100% 后绕回静音；
+         * 背光最暗 5%——不设到 0 是不想让屏幕全黑
          * （那样看不见菜单，没法确认调到哪一档了）。100% 那档单独钳位，
          * 不然 95+10=105 会直接跳过 100 冲到下一轮的 5%。不用 SELECT 是想
          * 把它留给以后可能加的系统级组合键（比如 SELECT+START 长按待机）。
          * 两页行为一致，所以放在分页之前。 */
-        if (edge & GAMEPAD_BIT_Y) {
+        if (edge & GAMEPAD_BIT_X) {
+            int volume = audio_output_get_volume() + 10;
+            if (volume > 100) volume = 0;
+            audio_output_set_volume(volume);
+            dirty = true;
+
+        } else if (edge & GAMEPAD_BIT_Y) {
             int backlight = display_get_backlight();
             backlight = (backlight >= 100) ? 5 : backlight + 10;
             if (backlight > 100) backlight = 100;
@@ -313,14 +315,10 @@ bool rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
         } else if (!in_games) {
             /* ---- 分类页 ---- */
 
-            /* 这一页没有上一级可退，B 就继续当音量键：每按一次加 10%，
-             * 到 100% 再按一次绕回 0%（和背光那档同一套循环手感）。进游戏
-             * 后仍完整保留原来的 B（跑/发射），重启则总是恢复默认档位。 */
+            /* 分类页的上一级就是 GAME/WORDS/TEST 开机页。用独立返回值告诉
+             * app_main，不能冒充“没有 ROM”，否则会误启动编译期内置游戏。 */
             if (edge & NES_PAD_B) {
-                int volume = audio_output_get_volume() + 10;
-                if (volume > 100) volume = 0;
-                audio_output_set_volume(volume);
-                dirty = true;
+                return ROM_MENU_BACK;
 
             } else if (edge & (NES_PAD_A | NES_PAD_START)) {
                 in_games = true;
@@ -359,7 +357,7 @@ bool rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
                                system_name(e->system), e->name,
                                (unsigned)(e->size / 1024), e->path);
                     }
-                    return true;
+                    return ROM_MENU_SELECTED;
                 }
 
             } else if (page_count > 1 && (edge & (NES_PAD_LEFT | NES_PAD_RIGHT))) {

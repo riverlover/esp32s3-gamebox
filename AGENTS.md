@@ -66,7 +66,8 @@ idf.py flash-roms                                          # 只在加/删顶层
 
 启动链：`app_main`（main.c）→ `nes_emu_prealloc` → `display_init` → GAME/WORDS/TEST；
 WORDS 在 `word_study_run()` 内可反复换年级、册次和单元，返回后回到开机模式选择；
-GAME/TEST 再进 `rom_menu_pick` → 对应模拟器（不返回）。
+GAME/TEST 再进 `rom_menu_pick`；游戏列表 B 返回平台页，平台页 B 返回开机模式选择，
+两页都用 X 调音量、Y 调背光；选定后进入对应模拟器（不返回）。
 
 ### 双核分工与「条带流式推屏」
 
