@@ -118,7 +118,7 @@ void input_gamepad_init(void);
 uint16_t input_gamepad_poll(void);
 
 /* 摇杆/按键可视化，同时按 SNES A+B（Shield B+C）退出。
- * 需要 display_init() 已经跑过。开机画面选 TEST 时 main.c 会调它；
+ * 需要 display_init() 已经跑过。SETTINGS 里的 Controller Test 会调它；
  * 不再是 input_gamepad_init() 自动触发的（那样每次开机都得看一遍，
  * 想跳过看不了）。 */
 void input_gamepad_show(void);

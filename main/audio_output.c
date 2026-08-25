@@ -54,6 +54,23 @@ static atomic_int s_volume = ATOMIC_VAR_INIT(AUDIO_VOLUME_DEFAULT);
  * 拿到的是"上次轮询以来"的峰值，不会被同一窗口内的旧值覆盖漏掉瞬态。 */
 static atomic_int s_recent_peak = ATOMIC_VAR_INIT(0);
 
+/* 百分比是给人看的档位，不该直接当线性振幅。线性 50->55 只增加约 0.8 dB，
+ * 小喇叭上几乎听不出变化；这条以 50% 为锚点的 S 曲线保持默认响度不变，
+ * 同时把中间常用区的档位差拉开、把两端压细。 */
+static int volume_curve_percent(int percent)
+{
+    if (percent <= 0) return 0;
+    if (percent >= 100) return 100;
+    if (percent <= 50) return (percent * percent + 25) / 50;
+    int remaining = 100 - percent;
+    return 100 - (remaining * remaining + 25) / 50;
+}
+
+static int32_t volume_gain_q15(int percent)
+{
+    return AUDIO_GAIN_MAX_Q15 * volume_curve_percent(percent) / 100;
+}
+
 esp_err_t audio_output_settings_init(void)
 {
     /* 音量档位只服务于当前菜单选择，不再读写 NVS。这样即使用户调低或静音，
@@ -157,7 +174,7 @@ static void audio_task(void *arg)
 {
     audio_packet_t packet;
     uint32_t frames_written = 0;
-    int32_t gain_q15 = AUDIO_GAIN_MAX_Q15 * audio_output_get_volume() / 100;
+    int32_t gain_q15 = volume_gain_q15(audio_output_get_volume());
     uint32_t fade_frames = (s_sample_rate * AUDIO_FADE_MS + 999) / 1000;
     int32_t fade_step = (AUDIO_GAIN_MAX_Q15 + (int32_t)fade_frames - 1) / (int32_t)fade_frames;
 
@@ -171,7 +188,7 @@ static void audio_task(void *arg)
         /* 不停 I2S、不停队列：静音仍持续送零采样，因此恢复时不用重建 DMA，
          * 也不会让模拟线程因为队列状态变化而丢帧。20ms 线性淡变只在消费侧
          * 修改栈上的包，NES/GB/GBC 的生产路径完全不用分叉。 */
-        int32_t target_gain = AUDIO_GAIN_MAX_Q15 * audio_output_get_volume() / 100;
+        int32_t target_gain = volume_gain_q15(audio_output_get_volume());
         size_t packet_bytes = packet.sample_count * 2 * sizeof(int16_t);
         if (gain_q15 == 0 && target_gain == 0) {
             /* 稳定静音是常态路径，整包清零比每个采样做乘法快得多。 */

@@ -11,8 +11,8 @@
  * 页脚和要不要画页码 —— 所以不写两套 draw_strip，由 draw_*()
  * 各自填好一份 draw_args_t 快照，回调照着画就行。
  *
- * B 在两页都只有“返回上一级”一个含义，避免孩子记两套规则。X 在两页都调
- * 音量，Y 在两页都调背光；这些设置只对本次开机有效。
+ * B 在两页都只有“返回上一级”一个含义，避免孩子记两套规则。音量、亮度和
+ * 手柄测试统一收进开机主页的 SETTINGS，不再把 X/Y 变成选单专用键。
  *
  * ---- 布局 ----
  *
@@ -37,7 +37,6 @@
 #include "rom_menu.h"
 #include "rom_store.h"
 #include "display.h"
-#include "audio_output.h"
 #include "input_serial.h"
 #include "input_gamepad.h"
 #include "input_usb.h"
@@ -57,10 +56,6 @@ static const char *TAG = "menu";
 #define FOOTER_LINE_Y  204
 #define FOOTER_Y       207
 #define TEXT_X         8       /* 文字左缩进 */
-/* 同高字体里中文步进 17px、ASCII 步进 9px。标题后依次放声音/亮度，
- * 右侧仍放得下最长 5 字符页码。 */
-#define SOUND_X        82
-#define BRIGHT_X       154
 #define HL_PAD         2       /* 反白块比文字左右各多出这么多 */
 
 /* 五个平台；无法从目录名推断平台的 ZIP 临时放第六类，选中后再识别。 */
@@ -87,8 +82,6 @@ typedef struct {
 typedef struct {
     const char *title;
     const char *footer;
-    int   volume;
-    int   backlight;
     int   page;             /* 0 基；page_count <= 1 时整个页码都不画 */
     int   page_count;
     int   sel_row;          /* 反白哪一行（页内行号） */
@@ -118,13 +111,6 @@ static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
     display_clear(C_GB0);
 
     display_text_16(TEXT_X, TITLE_Y, a->title, C_GB3);
-
-    char vol_text[16];
-    snprintf(vol_text, sizeof(vol_text), "声音:%d", a->volume);
-    display_text_16(SOUND_X, PAGE_Y, vol_text, C_GB2);
-    char bl_text[16];
-    snprintf(bl_text, sizeof(bl_text), "亮度:%d", a->backlight);
-    display_text_16(BRIGHT_X, PAGE_Y, bl_text, C_GB2);
 
     /* 只有一页就不画页码：分类页永远是 "1/1"，写出来只是噪声。 */
     if (a->page_count > 1) {
@@ -200,9 +186,7 @@ static void draw_categories(const category_t *cats, int cat_count, int sel)
 {
     draw_args_t a = {
         .title       = "平台选择",
-        .footer      = "A进入 B返回 X声音 Y亮度",
-        .volume      = audio_output_get_volume(),
-        .backlight   = display_get_backlight(),
+        .footer      = "A进入 B返回",
         .page        = 0,
         .page_count  = 1,
         .sel_row     = sel,
@@ -226,9 +210,7 @@ static void draw_games(int count, const category_t *cat, int sel)
     draw_args_t a = {
         /* 标题就是平台名，所以行里不再重复画平台徽标，省下的宽度给名字。 */
         .title       = system_name(cat->system),
-        .footer      = "A开始 B返回 X声音 Y亮度 左右翻页",
-        .volume      = audio_output_get_volume(),
-        .backlight   = display_get_backlight(),
+        .footer      = "A开始 B返回 左右翻页",
         .page        = page,
         .page_count  = (cat->count + PAGE_ROWS - 1) / PAGE_ROWS,
         .sel_row     = sel - first,
@@ -274,7 +256,7 @@ rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launc
     input_gamepad_init();
 
     printf("\n开机选单：%d 个游戏，%d 个平台。\n", count, cat_count);
-    printf("摇杆上下选，A 进入/确认，B 返回上一级，X 调声音。\n");
+    printf("摇杆上下选，A 进入/确认，B 返回上一级。\n");
     printf("（想换游戏按板子上的 RST 重启）\n\n");
 
     int cat = 0;
@@ -293,29 +275,10 @@ rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launc
 
         bool dirty = false;
 
-        /* X 调音量、Y 调背光，两页语义完全一致。音量到 100% 后绕回静音；
-         * 背光最暗 5%——不设到 0 是不想让屏幕全黑
-         * （那样看不见菜单，没法确认调到哪一档了）。100% 那档单独钳位，
-         * 不然 95+10=105 会直接跳过 100 冲到下一轮的 5%。不用 SELECT 是想
-         * 把它留给以后可能加的系统级组合键（比如 SELECT+START 长按待机）。
-         * 两页行为一致，所以放在分页之前。 */
-        if (edge & GAMEPAD_BIT_X) {
-            int volume = audio_output_get_volume() + 10;
-            if (volume > 100) volume = 0;
-            audio_output_set_volume(volume);
-            dirty = true;
-
-        } else if (edge & GAMEPAD_BIT_Y) {
-            int backlight = display_get_backlight();
-            backlight = (backlight >= 100) ? 5 : backlight + 10;
-            if (backlight > 100) backlight = 100;
-            display_backlight(backlight);
-            dirty = true;
-
-        } else if (!in_games) {
+        if (!in_games) {
             /* ---- 分类页 ---- */
 
-            /* 分类页的上一级就是 GAME/WORDS/TEST 开机页。用独立返回值告诉
+            /* 分类页的上一级就是 GAME/WORDS/SETTINGS 开机页。用独立返回值告诉
              * app_main，不能冒充“没有 ROM”，否则会误启动编译期内置游戏。 */
             if (edge & NES_PAD_B) {
                 return ROM_MENU_BACK;

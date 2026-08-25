@@ -56,8 +56,8 @@ ROM 说明：商业 NES/GB/GBC/SNES/Genesis ROM 都是版权物，**本仓库不
 
 | 文件 | 作用 |
 |---|---|
-| `main/main.c` | 启动流程：板级信息 → 初始化屏 → GAME / WORDS / TEST 分流 |
-| `main/word_study.c` | 教材/单元选择、8 词认读/三选一测验与分册 NVS 进度 |
+| `main/main.c` | 启动流程：板级信息 → 初始化屏 → GAME / WORDS / SETTINGS 分流 |
+| `main/word_study.c` | 教材/单元选择、单词认读/三选一测验与分册 NVS 进度 |
 | `main/word_study_data.c` | 译林版三至六年级上下册词表；三上为教材完整表，其余暂为核心词 |
 | `main/word_audio.c` | 读取独立分区中的英式发音索引，流式解码 IMA ADPCM 并异步播放 |
 | `tools/build_word_audio.py` | 用 macOS Daniel 语音生成 24 kHz 英式发音包 |
@@ -243,25 +243,24 @@ ROM 是选中之后才从卡上整个读进 PSRAM 的；ZIP 也在这时才识�
 换一张正常的 SDHC 卡这些数字会小一个量级。想量自己手上这张，把
 `main/sd_card.c` 的 `SD_BENCHMARK` 打开，判读方法写在那个函数的注释里。
 
-开机首页先选 **GAME / WORDS / TEST**：GAME 进入游戏，WORDS 进入离线单词学习，
-TEST 显示摇杆与按键诊断。游戏选单分两级：**平台选择页**（NES / GB / GBC / SNES / MD，各带游戏数）
+开机首页先选 **GAME / WORDS / SETTINGS**：GAME 进入游戏，WORDS 进入离线单词学习，
+SETTINGS 调节音量、背光并进入手柄诊断。游戏选单分两级：**平台选择页**
+（NES / GB / GBC / SNES / MD，各带游戏数）
 按 A 进入该平台的**游戏列表**，在列表里按 B 退回平台页。列表编号每个平台都
 从 01 起，左右仍是整页翻页。
-
-音量和背光在标题右侧显示当前档位，各按一次加 10%、到顶再按绕回最低：
 
 | 键 | 平台选择页 | 游戏列表 |
 |---|---|---|
 | A / START | 进入该平台 | 启动游戏 |
-| B（SNES B / Shield C） | 返回 GAME / WORDS / TEST | **返回平台页** |
-| X（SNES X / Shield A） | 声音 0~100 | 声音 0~100 |
-| Y（SNES Y / Shield D） | 亮度 5~100 | 亮度 5~100 |
+| B（SNES B / Shield C） | 返回 GAME / WORDS / SETTINGS | **返回平台页** |
 | 摇杆上下 | 选平台 | 选游戏 |
 | 摇杆左右 | — | 翻页 |
 
-B 在两页始终返回上一级：游戏列表退到平台页，平台页退到 GAME / WORDS / TEST。
-X 在两页都调音量，Y 在两页都调亮度。两项都只对本次开机有效，RST 或重新上电
-恢复默认。
+B 在两页始终返回上一级：游戏列表退到平台页，平台页退到 GAME / WORDS / SETTINGS。
+
+SETTINGS 采用粉色 retro-go Options 风格：上下选择 `Brightness`、`Volume` 或
+`Controller Test`，左右调节当前档位；调音量时会立即播放一次 `hello` 试听，
+A 进入手柄测试，B 返回首页。设置只对本次开机有效，RST 或重新上电恢复默认。
 
 ### 单词学习（WORDS）
 
@@ -296,7 +295,7 @@ JoyStick Shield，接线见「接线」一节。飞线手柄、USB 手柄、串�
 
 | 物理位置 | Shield 丝印 | SNES | Genesis | NES / GB / GBC |
 |---|---|---|---|---|
-| 上方大键 | A | X（选单中：调声音） | 无 | 无 |
+| 上方大键 | A | X | 无 | 无 |
 | 左方大键 | D | Y | C | 无 |
 | 右方大键 | B | A | B | A |
 | 下方大键 | C | B（选单中：返回上一级） | A | B（选单中：返回上一级） |
@@ -348,7 +347,7 @@ idf.py -p /dev/cu.usbserial-A5069RR4 monitor
 | `W` `A` `S` `D` 或方向键 | 上下左右 |
 | `K` 或 `Z` | A（跳） |
 | `J` 或 `X` | 选单：返回上一级；游戏：B（跑 / 发射） |
-| `U` | 选单：调声音；游戏：SNES X（读档修饰键） |
+| `U` | 游戏：SNES X（读档修饰键） |
 | `I` | SNES Y |
 | 回车 | START |
 | Tab | SELECT |

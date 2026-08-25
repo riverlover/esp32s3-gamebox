@@ -19,5 +19,5 @@ void word_audio_play_quiz_perfect(void);
 
 bool word_audio_is_available(void);
 
-/* 返回 GAME/WORDS/TEST 首页前停止播放、释放 I2S 和索引内存。 */
+/* 返回 GAME/WORDS/SETTINGS 首页前停止播放、释放 I2S 和索引内存。 */
 void word_audio_shutdown(void);

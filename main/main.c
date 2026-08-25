@@ -1,7 +1,7 @@
 /*
  * 在 ESP32-S3 + ST7789（240x320）上运行 NES / GB / GBC / SNES / Genesis
  *
- * 流程：打印板级信息 -> 初始化屏 -> 选择 GAME/WORDS/TEST -> 学习或启动模拟器
+ * 流程：打印板级信息 -> 初始化屏 -> 选择 GAME/WORDS/SETTINGS -> 学习或启动模拟器
  *
  * 接线见 display.h 顶部。换屏或显示不正常时改那里的宏，不用动这个文件。
  * 把 SHOW_DISPLAY_SELFTEST 改成 1 可以在启动模拟器前先跑一遍点屏诊断图。
@@ -31,6 +31,7 @@
 #include "overclock.h"
 #include "sd_card.h"
 #include "word_study.h"
+#include "word_audio.h"
 
 static const char *TAG = "main";
 
@@ -153,16 +154,16 @@ static void splash(void)
     vTaskDelay(pdMS_TO_TICKS(1500));
 }
 
-/* loading 那 1.5 秒过完之后，开机画面停下来问 GAME/WORDS/TEST，不再自动往下走——
+/* loading 那 1.5 秒过完之后，开机画面停下来问 GAME/WORDS/SETTINGS，不再自动往下走——
  * 之前是只要 PAD_DIAG_SCREEN=1（编译期开关）就每次开机都强制看一遍摇杆
  * 诊断画面，想跳过看不了。现在交给玩家自己选：GAME 直接进 ROM 菜单，
- * TEST 先看一遍 input_gamepad_show() 那套摇杆/按键可视化。 */
+ * SETTINGS 统一放音量、亮度和 input_gamepad_show() 那套摇杆/按键测试。 */
 #define BOOT_MENU_POLL_MS 16   /* 和 rom_menu.c 的 POLL_MS 同一个量级 */
 
 typedef enum {
     BOOT_MODE_GAME,
     BOOT_MODE_WORDS,
-    BOOT_MODE_TEST,
+    BOOT_MODE_SETTINGS,
     BOOT_MODE_COUNT,
 } boot_mode_t;
 
@@ -190,11 +191,13 @@ static void boot_draw_icon(boot_mode_t mode, int cx, int y, uint16_t color)
         display_fill_rect(cx - 16, y + 14, 11, 2, color);
         display_fill_rect(cx + 5, y + 14, 11, 2, color);
     } else {
-        /* 摇杆诊断用准星表达“检查/校准”，和 TEST 的实际页面一致。 */
-        display_rect(cx - 16, y + 2, 32, 25, color);
-        display_hline(cx - 11, y + 14, 22, color);
-        display_fill_rect(cx - 1, y + 7, 3, 15, color);
-        display_fill_rect(cx - 4, y + 11, 9, 7, color);
+        /* 三条滑杆比齿轮在 42x29 的小区域里更清楚，也直接对应设置页内容。 */
+        display_hline(cx - 18, y + 7, 36, color);
+        display_hline(cx - 18, y + 15, 36, color);
+        display_hline(cx - 18, y + 23, 36, color);
+        display_fill_rect(cx - 8, y + 4, 4, 7, color);
+        display_fill_rect(cx + 7, y + 12, 4, 7, color);
+        display_fill_rect(cx - 2, y + 20, 4, 7, color);
     }
 }
 
@@ -204,9 +207,9 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
     (void)y0;
     (void)h;
     const int *selected = ctx;
-    static const char *labels[BOOT_MODE_COUNT] = { "GAME", "WORDS", "TEST" };
+    static const char *labels[BOOT_MODE_COUNT] = { "GAME", "WORDS", "SETTINGS" };
     static const char *descriptions[BOOT_MODE_COUNT] = {
-        "选择并启动游戏", "按教材学习单词", "检查摇杆与按键"
+        "选择并启动游戏", "按教材学习单词", "声音 亮度 手柄测试"
     };
 
     display_clear(C_GB0);
@@ -229,8 +232,13 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
         display_rect(x, 87, card_w, card_h, active ? C_GB3 : C_GB2);
         boot_draw_icon((boot_mode_t)i, cx, 94, color);
 
-        int label_w = (int)strlen(labels[i]) * 6 * 2;
-        display_text(cx - label_w / 2, 132, labels[i], color, 2);
+        if (i == BOOT_MODE_SETTINGS) {
+            int label_w = display_text_width_16(labels[i]);
+            display_text_16(cx - label_w / 2, 130, labels[i], color);
+        } else {
+            int label_w = (int)strlen(labels[i]) * 6 * 2;
+            display_text(cx - label_w / 2, 132, labels[i], color, 2);
+        }
     }
 
     int desc_w = display_text_width_16(descriptions[*selected]);
@@ -243,6 +251,130 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
     int footer_w = display_text_width_16("左右选择  A确认");
     display_text_16((DISP_FB_W - footer_w) / 2, 204,
                     "左右选择  A确认", C_GB2);
+}
+
+/* 独立设置页沿用 retro-go 的 Options 结构：纯色面板、居中标题、白色反选行，
+ * 但配色改成用户指定的粉色。设置仍只对本次开机有效，避免孩子不小心静音后
+ * 每次上电都以为机器坏了。 */
+#define SETTINGS_COUNT       3
+#define SETTINGS_BRIGHTNESS  0
+#define SETTINGS_VOLUME      1
+#define SETTINGS_TEST        2
+#define C_SETTINGS_BG        RGB565(188, 38, 104)
+#define C_SETTINGS_BORDER    RGB565(255, 164, 204)
+
+static void settings_strip(uint16_t *strip, int y0, int h, void *ctx)
+{
+    (void)strip;
+    (void)y0;
+    (void)h;
+    int selected = *(const int *)ctx;
+
+    display_clear(C_GB0);
+    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_GB2);
+
+    const int box_x = 27;
+    const int box_y = 34;
+    const int box_w = 234;
+    const int box_h = 130;
+    const int row_x = box_x + 9;
+    const int row_w = box_w - 18;
+    const int row_y = box_y + 39;
+    const int row_h = 24;
+
+    display_fill_rect(box_x, box_y, box_w, box_h, C_SETTINGS_BG);
+    display_rect(box_x, box_y, box_w, box_h, C_SETTINGS_BORDER);
+
+    const char *title = "Options";
+    display_text_16(box_x + (box_w - display_text_width_16(title)) / 2,
+                    box_y + 9, title, C_WHITE);
+
+    char rows[SETTINGS_COUNT][28];
+    snprintf(rows[SETTINGS_BRIGHTNESS], sizeof(rows[0]),
+             "Brightness: %3d%%", display_get_backlight());
+    snprintf(rows[SETTINGS_VOLUME], sizeof(rows[0]),
+             "Volume    : %3d%%", audio_output_get_volume());
+    snprintf(rows[SETTINGS_TEST], sizeof(rows[0]), "Controller Test");
+
+    for (int i = 0; i < SETTINGS_COUNT; i++) {
+        int y = row_y + i * row_h;
+        uint16_t fg = C_WHITE;
+        if (i == selected) {
+            display_fill_rect(row_x, y - 2, row_w, row_h - 2, C_WHITE);
+            fg = C_SETTINGS_BG;
+        }
+        display_text_16(row_x + 6, y, rows[i], fg);
+    }
+
+    int hint1_w = display_text_width_16("上下选择  左右调整");
+    display_text_16((DISP_FB_W - hint1_w) / 2, 178,
+                    "上下选择  左右调整", C_GB3);
+    int hint2_w = display_text_width_16("A进入测试  B返回");
+    display_text_16((DISP_FB_W - hint2_w) / 2, 202,
+                    "A进入测试  B返回", C_GB2);
+}
+
+static void settings_menu(bool *refresh_rom_index)
+{
+    int selected = SETTINGS_VOLUME;
+    bool volume_preview_active = false;
+    display_stream_sync(settings_strip, &selected);
+
+    uint16_t prev = input_serial_poll() | input_gamepad_poll() | input_usb_poll();
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(BOOT_MENU_POLL_MS));
+        uint16_t now = input_serial_poll() | input_gamepad_poll() | input_usb_poll();
+        uint16_t edge = now & ~prev;
+        prev = now;
+        bool dirty = false;
+
+        if (edge & NES_PAD_B) {
+            if (volume_preview_active) word_audio_shutdown();
+            return;
+        }
+
+        if (edge & (NES_PAD_UP | NES_PAD_DOWN)) {
+            int delta = (edge & NES_PAD_UP) ? -1 : 1;
+            selected = (selected + delta + SETTINGS_COUNT) % SETTINGS_COUNT;
+            dirty = true;
+        } else if (edge & (NES_PAD_LEFT | NES_PAD_RIGHT)) {
+            int delta = (edge & NES_PAD_LEFT) ? -1 : 1;
+            if (selected == SETTINGS_VOLUME) {
+                /* 每档 10%，并立即用真实教材语音试听。以前 5% 线性振幅既没有
+                 * 试听，档间又只有约 0.8 dB，听起来就像设置没传给 WORDS。 */
+                int volume = audio_output_get_volume() + delta * 10;
+                if (volume < 0) volume = 0;
+                if (volume > 100) volume = 100;
+                audio_output_set_volume(volume);
+                if (volume_preview_active || (volume > 0 && word_audio_init())) {
+                    volume_preview_active = true;
+                    word_audio_play("hello");
+                }
+                dirty = true;
+            } else if (selected == SETTINGS_BRIGHTNESS) {
+                int backlight = display_get_backlight() + delta * 10;
+                if (backlight < 5) backlight = 5;
+                if (backlight > 100) backlight = 100;
+                display_backlight(backlight);
+                dirty = true;
+            }
+        } else if (selected == SETTINGS_TEST &&
+                   (edge & (NES_PAD_A | NES_PAD_START))) {
+            /* TEST 原来在主页；只在真正进入诊断时才碰 ROM 目录，WORDS 和普通
+             * 设置路径仍不会承担 SD 全盘扫描。 */
+            if (volume_preview_active) {
+                word_audio_shutdown();
+                volume_preview_active = false;
+            }
+            rom_store_init(*refresh_rom_index);
+            *refresh_rom_index = false;
+            input_gamepad_show();
+            display_stream_sync(settings_strip, &selected);
+            prev = input_serial_poll() | input_gamepad_poll() | input_usb_poll();
+        }
+
+        if (dirty) display_stream_sync(settings_strip, &selected);
+    }
 }
 
 static boot_mode_t boot_menu(void)
@@ -309,7 +441,7 @@ void app_main(void)
      * 里还会再调一遍，都是幂等的，不会重复初始化出问题。
      *
      * WORDS 完全离线，不应该为了学单词先等一次 ROM 全盘扫描。因此先选模式，
-     * 只有 GAME/TEST 路径才初始化 ROM 目录；TEST 仍能在诊断画面看到存储占用。 */
+     * 只有 GAME 或 SETTINGS 里真正进入 Controller Test 时才初始化 ROM 目录。 */
     input_serial_init();
     input_usb_init();
     input_gamepad_init();
@@ -329,10 +461,13 @@ void app_main(void)
             word_study_run();
             continue;
         }
+        if (boot_mode == BOOT_MODE_SETTINGS) {
+            settings_menu(&refresh_rom_index);
+            continue;
+        }
 
         rom_store_init(refresh_rom_index);
         refresh_rom_index = false;  /* 同一次开机只强制重扫一次，返回菜单不再重扫 */
-        if (boot_mode == BOOT_MODE_TEST) input_gamepad_show();
 
         rom_menu_result_t menu_result = rom_menu_pick(&entry, &launch_keys);
         if (menu_result == ROM_MENU_BACK) continue;

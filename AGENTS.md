@@ -54,25 +54,26 @@ idf.py flash-word-audio                                   # 只在教材词表/�
 | `SCAN_PROFILE`（默认 0） | `main/rom_store.c` | 扫描分阶段计时（readdir / stat），定位扫描慢在哪 |
 | `OVERCLOCK_LEVEL`（默认 0，关闭） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过 |
 
-开机画面（`main.c`）现在会停下来问 GAME/WORDS/TEST：WORDS 进入苏州小学译林版
-三至六年级上/下册选择，再选择 Unit 1～8；每册进度按教材版本独立保存；
-选 TEST 才会进摇杆位置 +
-两路原始 ADC 值的诊断画面（`input_gamepad_show()`），不再是编译期开关。
+开机画面（`main.c`）现在会停下来问 GAME/WORDS/SETTINGS：WORDS 进入苏州小学译林版
+三至六年级上/下册选择，再选择 Unit 1～8；每册进度按教材版本独立保存；SETTINGS
+沿用 retro-go Options 的单列交互并改成粉色，可调音量和背光；音量使用以 50% 为
+锚点的听感曲线，每次调整立即播放 `hello` 试听；也可进入摇杆位置 + 两路原始 ADC
+值的 Controller Test（`input_gamepad_show()`）。
 
 运行时核 0 每秒自报 `NES 60 fps (模拟+转换 8.1 ms/帧，CPU 余量 52%)`。
 两个核并行，帧时间是 `max(核 0, 核 1)`，所以两个数要分开看。
 
 ## 架构
 
-启动链：`app_main`（main.c）→ `nes_emu_prealloc` → `display_init` → GAME/WORDS/TEST；
+启动链：`app_main`（main.c）→ `nes_emu_prealloc` → `display_init` → GAME/WORDS/SETTINGS；
 WORDS 在 `word_study_run()` 内可反复换年级、册次和单元；三上按教材 Word lists
 完整收录 127 项（各单元 13/11/17/9/18/12/31/16），其余分册暂为每单元 8 个核心词；
 卡片正面自动播放英式发音，X 可重播，QUIZ 判题时答对/答错分别播放上升/下降
 8-bit 掌机音效，顶部对应进度格同步变绿/红，本单元全部答对时在结果页播放专属
 过关短曲；返回后会释放 24 kHz I2S，
 再回到开机模式选择；
-GAME/TEST 再进 `rom_menu_pick`；游戏列表 B 返回平台页，平台页 B 返回开机模式选择，
-两页都用 X 调音量、Y 调背光；选定后进入对应模拟器（不返回）。
+GAME 再进 `rom_menu_pick`；游戏列表 B 返回平台页，平台页 B 返回开机模式选择；音量、
+背光和 Controller Test 集中在 SETTINGS，选定游戏后进入对应模拟器（不返回）。
 
 ### 双核分工与「条带流式推屏」
 
