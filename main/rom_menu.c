@@ -7,9 +7,9 @@
  *                  ^                      |
  *                  +----------B-----------+
  *
- * 两页共用同一个轮询循环、同一份边沿检测和同一个条带回调，差别只有标题、
- * 页脚和要不要画页码 —— 所以不写两套 draw_strip，由 draw_*()
- * 各自填好一份 draw_args_t 快照，回调照着画就行。
+ * 两页共用同一个轮询循环、同一份边沿检测和同一个条带回调。平台页用 2x3
+ * 卡片网格，游戏页用带编号徽标的列表；draw_*() 各自填好 draw_args_t 快照，
+ * 回调只负责按当前页面类型绘制。
  *
  * B 在两页都只有“返回上一级”一个含义，避免孩子记两套规则。音量、亮度和
  * 手柄测试统一收进开机主页的 SETTINGS，不再把 X/Y 变成选单专用键。
@@ -17,11 +17,11 @@
  * ---- 布局 ----
  *
  * 画布是 288x224（NES 画布尺寸，居中在 320x240 的屏上，见 display.h）。
- * 每页 10 个游戏 x 18px 行距 = 180px，超出的自然翻页。分类页最多 5 行
- * （五个平台），不会翻页。
+ * 游戏列表每页 8 项 x 21px 行距 = 168px，给选中框和分隔线留出呼吸感；
+ * 平台页最多 6 类，正好排成 2 列 x 3 行。
  *
- * 选中项用反白（填充块 + 浅色字），比箭头更醒目。中文是 16x16 点阵，
- * 行距留 2px，有限的 288x224 画布仍能同时容纳标题、10 行列表和操作提示。
+ * 选中项用反白（填充块 + 浅色字），比单独一个箭头更醒目。中文是 16x16
+ * 点阵，有限的 288x224 画布仍能同时容纳标题、8 行列表和操作提示。
  *
  * ---- 为什么要边沿检测 ----
  *
@@ -47,16 +47,21 @@
 
 static const char *TAG = "menu";
 
-#define TITLE_Y        2
-#define PAGE_Y         7
-#define HEADER_LINE_Y  20
-#define LIST_Y         25      /* 第一行的 y */
-#define ROW_H          18      /* 16px 中文点阵 + 2px 行距 */
-#define PAGE_ROWS      10
+#define TITLE_Y        5
+#define HEADER_LINE_Y  25
+#define LIST_Y         32      /* 第一行文字基线 */
+#define ROW_H          21      /* 16px 点阵 + 选中框和分隔线 */
+#define PAGE_ROWS      8
 #define FOOTER_LINE_Y  204
 #define FOOTER_Y       207
 #define TEXT_X         8       /* 文字左缩进 */
-#define HL_PAD         2       /* 反白块比文字左右各多出这么多 */
+
+#define CARD_MARGIN_X  8
+#define CARD_GAP_X     8
+#define CARD_GAP_Y     6
+#define CARD_W         132
+#define CARD_H         48
+#define CARD_Y         35
 
 /* 五个平台；无法从目录名推断平台的 ZIP 临时放第六类，选中后再识别。 */
 #define SYSTEM_COUNT   6
@@ -82,22 +87,26 @@ typedef struct {
 typedef struct {
     const char *title;
     const char *footer;
+    char  meta[32];          /* 标题右侧：总数或总数 + 页码 */
+    bool  category_grid;
     int   page;             /* 0 基；page_count <= 1 时整个页码都不画 */
     int   page_count;
     int   sel_row;          /* 反白哪一行（页内行号） */
     int   row_count;
+    int   first_number;     /* 游戏列表第一项的 1 基编号 */
+    rom_system_t systems[SYSTEM_COUNT];
+    int   counts[SYSTEM_COUNT];
     char  lines[PAGE_ROWS][64];
 } draw_args_t;
 
-/* 一律补到 4 字符宽：加了 SNES 之后名字列才还能对齐成一竖条。 */
 static const char *system_name(rom_system_t system)
 {
-    if (system == ROM_SYSTEM_ZIP) return "ZIP ";
+    if (system == ROM_SYSTEM_ZIP) return "ZIP";
     if (system == ROM_SYSTEM_SNES) return "SNES";
-    if (system == ROM_SYSTEM_GENESIS) return "MD  ";
-    if (system == ROM_SYSTEM_GBC) return "GBC ";
-    if (system == ROM_SYSTEM_GB) return "GB  ";
-    return "NES ";
+    if (system == ROM_SYSTEM_GENESIS) return "MD";
+    if (system == ROM_SYSTEM_GBC) return "GBC";
+    if (system == ROM_SYSTEM_GB) return "GB";
+    return "NES";
 }
 
 static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
@@ -110,33 +119,49 @@ static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
      * 背景上对比度太弱，会糊。 */
     display_clear(C_GB0);
 
+    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_GB2);
     display_text_16(TEXT_X, TITLE_Y, a->title, C_GB3);
-
-    /* 只有一页就不画页码：分类页永远是 "1/1"，写出来只是噪声。 */
-    if (a->page_count > 1) {
-        char page_text[32];
-        snprintf(page_text, sizeof(page_text), "%d/%d",
-                 a->page + 1, a->page_count);
-        int page_x = DISP_FB_W - TEXT_X - display_text_width_16(page_text);
-        display_text_16(page_x, PAGE_Y, page_text, C_GB3);
-    }
+    int meta_x = DISP_FB_W - TEXT_X - display_text_width_16(a->meta);
+    display_text_16(meta_x, TITLE_Y, a->meta, C_GB2);
     display_fill_rect(TEXT_X, HEADER_LINE_Y, DISP_FB_W - 2 * TEXT_X, 1,
                       C_GB2);
 
-    for (int row = 0; row < a->row_count; row++) {
-        int y = LIST_Y + row * ROW_H;
-        const char *line = a->lines[row];
+    if (a->category_grid) {
+        for (int i = 0; i < a->row_count; i++) {
+            int col = i % 2;
+            int row = i / 2;
+            int x = CARD_MARGIN_X + col * (CARD_W + CARD_GAP_X);
+            int y = CARD_Y + row * (CARD_H + CARD_GAP_Y);
+            bool active = i == a->sel_row;
 
-        if (row == a->sel_row) {
-            /* 反白：铺一条 C_GB2 块，再在上面写 C_GB0 字——不用最深的
-             * C_GB3 是嫌太重，C_GB2 对比度也够。块宽铺满画布，这样
-             * 长短不一的名字看着也是整齐一条。 */
-            display_fill_rect(TEXT_X - HL_PAD, y - 1,
-                              DISP_FB_W - 2 * (TEXT_X - HL_PAD), ROW_H - 1,
-                              C_GB2);
-            display_text_16(TEXT_X, y, line, C_GB0);
-        } else {
-            display_text_16(TEXT_X, y, line, C_GB2);
+            display_fill_rect(x, y, CARD_W, CARD_H, active ? C_GB2 : C_GB1);
+            display_rect(x, y, CARD_W, CARD_H, active ? C_GB3 : C_GB2);
+            display_text_16(x + 9, y + 6, system_name(a->systems[i]),
+                            active ? C_GB0 : C_GB3);
+
+            char count_text[24];
+            snprintf(count_text, sizeof(count_text), "%d GAMES", a->counts[i]);
+            display_text_16(x + 9, y + 27, count_text,
+                            active ? C_GB1 : C_GB2);
+        }
+    } else {
+        for (int row = 0; row < a->row_count; row++) {
+            int y = LIST_Y + row * ROW_H;
+            bool active = row == a->sel_row;
+
+            if (active) {
+                display_fill_rect(6, y - 3, DISP_FB_W - 12, ROW_H - 1, C_GB2);
+            } else if (row + 1 < a->row_count) {
+                display_fill_rect(TEXT_X, y + 17, DISP_FB_W - 2 * TEXT_X, 1,
+                                  C_GB1);
+            }
+
+            display_fill_rect(TEXT_X, y - 1, 31, 17, active ? C_GB3 : C_GB1);
+            char number[8];
+            snprintf(number, sizeof(number), "%02d", a->first_number + row);
+            display_text_16(TEXT_X + 6, y, number, active ? C_GB0 : C_GB2);
+            display_text_16(46, y, a->lines[row], active ? C_GB0 : C_GB2);
+            if (active) display_text_16(DISP_FB_W - 17, y, ">", C_GB0);
         }
     }
 
@@ -185,18 +210,22 @@ static int nth_of_system(int count, rom_system_t system, int j)
 static void draw_categories(const category_t *cats, int cat_count, int sel)
 {
     draw_args_t a = {
-        .title       = "平台选择",
-        .footer      = "A进入 B返回",
+        .title       = "选择游戏平台",
+        .footer      = "方向选择  A进入  B返回",
+        .category_grid = true,
         .page        = 0,
         .page_count  = 1,
         .sel_row     = sel,
-        .row_count   = cat_count > PAGE_ROWS ? PAGE_ROWS : cat_count,
+        .row_count   = cat_count,
     };
 
+    int total = 0;
     for (int i = 0; i < a.row_count; i++) {
-        snprintf(a.lines[i], sizeof(a.lines[0]), "%s    %d",
-                 system_name(cats[i].system), cats[i].count);
+        a.systems[i] = cats[i].system;
+        a.counts[i] = cats[i].count;
+        total += cats[i].count;
     }
+    snprintf(a.meta, sizeof(a.meta), "%d GAMES", total);
     display_stream_sync(draw_strip, &a);
 }
 
@@ -211,11 +240,15 @@ static void draw_games(int count, const category_t *cat, int sel)
         /* 标题就是平台名，所以行里不再重复画平台徽标，省下的宽度给名字。 */
         .title       = system_name(cat->system),
         .footer      = "A开始 B返回 左右翻页",
+        .category_grid = false,
         .page        = page,
         .page_count  = (cat->count + PAGE_ROWS - 1) / PAGE_ROWS,
         .sel_row     = sel - first,
         .row_count   = last - first,
+        .first_number = first + 1,
     };
+    snprintf(a.meta, sizeof(a.meta), "%d GAMES  %d/%d", cat->count,
+             page + 1, a.page_count);
 
     for (int j = first; j < last; j++) {
         int i = nth_of_system(count, cat->system, j);
@@ -226,10 +259,10 @@ static void draw_games(int count, const category_t *cat, int sel)
          * 菜单任务里先完成，核 1 的推屏回调只读取这份栈上快照，避免长列表
          * 页面令 3 KB 推屏任务栈承受目录访问和 snprintf。
          *
-         * 编号是页内序号，每个平台都从 01 起——它只是行号，接着全局编号
-         * 一路数下去反而看不出这是第几个。 */
+         * 编号是平台内序号，每个平台都从 01 起；翻页后继续递增，不能接着
+         * 全局目录编号一路数，否则看不出这是该平台里的第几个。 */
         char *line = a.lines[j - first];
-        snprintf(line, sizeof(a.lines[0]), "%02d %s", j + 1, e->name);
+        snprintf(line, sizeof(a.lines[0]), "%s", e->name);
     }
     display_stream_sync(draw_strip, &a);
 }
@@ -256,7 +289,7 @@ rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launc
     input_gamepad_init();
 
     printf("\n开机选单：%d 个游戏，%d 个平台。\n", count, cat_count);
-    printf("摇杆上下选，A 进入/确认，B 返回上一级。\n");
+    printf("方向键选择，A 进入/确认，B 返回上一级。\n");
     printf("（想换游戏按板子上的 RST 重启）\n\n");
 
     int cat = 0;
@@ -287,12 +320,26 @@ rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launc
                 in_games = true;
                 dirty = true;
 
-            } else {
-                int moved = 0;
-                if (edge & NES_PAD_UP)   moved = -1;
-                if (edge & NES_PAD_DOWN) moved = +1;
-                if (moved) {
-                    cat = (cat + moved + cat_count) % cat_count;
+            } else if (edge & (NES_PAD_LEFT | NES_PAD_RIGHT)) {
+                /* 卡片按行排列：左右切同一行。最后一行只有左卡时，向右不动，
+                 * 不突然跳去别的行，孩子看到的移动方向和光标完全一致。 */
+                int target = cat + ((edge & NES_PAD_LEFT) ? -1 : 1);
+                if (target >= 0 && target < cat_count && target / 2 == cat / 2) {
+                    cat = target;
+                    dirty = true;
+                }
+            } else if (edge & (NES_PAD_UP | NES_PAD_DOWN)) {
+                /* 上下切同一列，到边缘后在该列内环绕。 */
+                int col = cat % 2;
+                int target = cat + ((edge & NES_PAD_UP) ? -2 : 2);
+                if (target < 0) {
+                    target = cat_count - 1;
+                    while (target >= 0 && target % 2 != col) target--;
+                } else if (target >= cat_count) {
+                    target = col;
+                }
+                if (target >= 0 && target < cat_count) {
+                    cat = target;
                     dirty = true;
                 }
             }
@@ -324,7 +371,7 @@ rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launc
                 }
 
             } else if (page_count > 1 && (edge & (NES_PAD_LEFT | NES_PAD_RIGHT))) {
-                /* 左右直接翻一整页，并尽量保留当前行。最后一页不足 10 项时，
+                /* 左右直接翻一整页，并尽量保留当前行。最后一页不足 8 项时，
                  * 同一行不存在就落到最后一项；页首和页尾之间同样可以环绕。
                  * 这一支排在上下之前单独走，是为了让斜推摇杆时以翻页为准，
                  * 避免同时又上下移动一格。
