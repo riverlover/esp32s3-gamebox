@@ -56,8 +56,9 @@ idf.py flash-word-audio                                   # 只在教材词表/�
 
 开机画面（`main.c`）现在会停下来问 GAME/WORDS/SETTINGS：WORDS 进入苏州小学译林版
 三至六年级上/下册选择，再选择 Unit 1～8；每册进度按教材版本独立保存；SETTINGS
-沿用 retro-go Options 的单列交互并改成粉色，可调音量和背光；音量使用以 50% 为
-锚点的听感曲线，每次调整立即播放 `hello` 试听；也可进入摇杆位置 + 两路原始 ADC
+沿用 retro-go Options 的单列交互，配色统一使用主页的四阶 Game Boy 绿色，可调音量
+和背光；音量使用以 50% 为锚点的听感曲线，每次调整立即播放 `hello` 试听；也可进入
+摇杆位置 + 两路原始 ADC
 值的 Controller Test（`input_gamepad_show()`）。
 
 运行时核 0 每秒自报 `NES 60 fps (模拟+转换 8.1 ms/帧，CPU 余量 52%)`。

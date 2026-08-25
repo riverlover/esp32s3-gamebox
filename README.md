@@ -258,9 +258,10 @@ SETTINGS 调节音量、背光并进入手柄诊断。游戏选单分两级：**
 
 B 在两页始终返回上一级：游戏列表退到平台页，平台页退到 GAME / WORDS / SETTINGS。
 
-SETTINGS 采用粉色 retro-go Options 风格：上下选择 `Brightness`、`Volume` 或
-`Controller Test`，左右调节当前档位；调音量时会立即播放一次 `hello` 试听，
-A 进入手柄测试，B 返回首页。设置只对本次开机有效，RST 或重新上电恢复默认。
+SETTINGS 采用与主页一致的 Game Boy 绿色 retro-go Options 风格：上下选择
+`Brightness`、`Volume` 或 `Controller Test`，左右调节当前档位；调音量时会立即
+播放一次 `hello` 试听，A 进入手柄测试，B 返回首页。设置只对本次开机有效，RST
+或重新上电恢复默认。
 
 ### 单词学习（WORDS）
 

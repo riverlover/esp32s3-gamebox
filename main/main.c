@@ -253,15 +253,13 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
                     "左右选择  A确认", C_GB2);
 }
 
-/* 独立设置页沿用 retro-go 的 Options 结构：纯色面板、居中标题、白色反选行，
- * 但配色改成用户指定的粉色。设置仍只对本次开机有效，避免孩子不小心静音后
- * 每次上电都以为机器坏了。 */
+/* 独立设置页沿用 retro-go 的 Options 结构：纯色面板、居中标题、反选行；
+ * 颜色统一复用主页和 ROM 菜单的四阶 Game Boy 绿色。设置仍只对本次开机
+ * 有效，避免孩子不小心静音后每次上电都以为机器坏了。 */
 #define SETTINGS_COUNT       3
 #define SETTINGS_BRIGHTNESS  0
 #define SETTINGS_VOLUME      1
 #define SETTINGS_TEST        2
-#define C_SETTINGS_BG        RGB565(188, 38, 104)
-#define C_SETTINGS_BORDER    RGB565(255, 164, 204)
 
 static void settings_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
@@ -282,12 +280,12 @@ static void settings_strip(uint16_t *strip, int y0, int h, void *ctx)
     const int row_y = box_y + 39;
     const int row_h = 24;
 
-    display_fill_rect(box_x, box_y, box_w, box_h, C_SETTINGS_BG);
-    display_rect(box_x, box_y, box_w, box_h, C_SETTINGS_BORDER);
+    display_fill_rect(box_x, box_y, box_w, box_h, C_GB1);
+    display_rect(box_x, box_y, box_w, box_h, C_GB3);
 
     const char *title = "Options";
     display_text_16(box_x + (box_w - display_text_width_16(title)) / 2,
-                    box_y + 9, title, C_WHITE);
+                    box_y + 9, title, C_GB3);
 
     char rows[SETTINGS_COUNT][28];
     snprintf(rows[SETTINGS_BRIGHTNESS], sizeof(rows[0]),
@@ -298,10 +296,10 @@ static void settings_strip(uint16_t *strip, int y0, int h, void *ctx)
 
     for (int i = 0; i < SETTINGS_COUNT; i++) {
         int y = row_y + i * row_h;
-        uint16_t fg = C_WHITE;
+        uint16_t fg = C_GB2;
         if (i == selected) {
-            display_fill_rect(row_x, y - 2, row_w, row_h - 2, C_WHITE);
-            fg = C_SETTINGS_BG;
+            display_fill_rect(row_x, y - 2, row_w, row_h - 2, C_GB2);
+            fg = C_GB0;
         }
         display_text_16(row_x + 6, y, rows[i], fg);
     }
