@@ -14,7 +14,7 @@ void word_audio_play(const char *word);
  * 发音包；新音效会取消还在排队的单词发音，避免两路声音叠加。 */
 void word_audio_play_quiz_result(bool correct);
 
-/* 一轮 8/8 后在结果页播放一次专属过关短曲。 */
+/* 一轮把本单元全部词条答对后，在结果页播放一次专属过关短曲。 */
 void word_audio_play_quiz_perfect(void);
 
 bool word_audio_is_available(void);

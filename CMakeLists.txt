@@ -9,7 +9,7 @@ project(esp32s3-gamebox)
 # 发音。生成器用 macOS 的 Daniel（en_GB）逐词合成，再压成 24 kHz IMA ADPCM。
 # 格式和板上解码器分别见 tools/build_word_audio.py / main/word_audio.c。
 #
-# 语音包不挂在 app 的默认依赖上：第一次生成 468 条要几分钟，教材没变时无需
+# 语音包不挂在 app 的默认依赖上：第一次生成 524 条要几分钟，教材没变时无需
 # 重跑。生成并烧录用：
 #   idf.py flash-word-audio
 # 或者手工：

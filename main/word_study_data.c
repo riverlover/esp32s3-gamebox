@@ -1,52 +1,95 @@
 /*
- * 苏州小学现行译林版英语的分册核心词。
+ * 苏州小学现行译林版英语的分册词表。
  *
- * 每单元取 Word lists 中最适合第一轮认读的 8 个核心词，严格保留教材顺序。
- * 这不是删减教材词表：64 词是第一阶段学习集，后续可在不改变进度格式的前提下
- * 继续增加“拓展词”层。修订版教材逐年滚动启用，所以每册都有独立版本号和 NVS
- * 键；换版时新旧进度不会被错误地当成同一套词。
+ * 三年级上册以译林出版社教材 Word lists 第 78～80 页为准，生词、短语、重要句型
+ * 和带 * 的非单元核心词全部收录，共 127 项；其余分册暂时仍是每单元 8 个第一阶段
+ * 核心词。修订版教材逐年滚动启用，所以每册都有独立版本号和 NVS 键；换版或由
+ * 核心集升级为完整词表时，新旧进度不会被错误地当成同一套词。
  */
 
 #include "word_study_data.h"
 
 #define U(n, w, m) { (w), (m), (n) - 1 }
+#define WORDS_COUNT(a) ((uint16_t)(sizeof(a) / sizeof((a)[0])))
 
-static const study_word_t G3A[STUDY_DECK_WORDS] = {
-    U(1, "hello", "你好"), U(1, "hi", "嗨"),
-    U(1, "Good morning", "早上好"), U(1, "I", "我"),
-    U(1, "am", "是"), U(1, "a", "一个"),
-    U(1, "cat", "猫"), U(1, "Miss", "小姐; 女士"),
+static const study_word_t G3A[] = {
+    U(1, "hello", "哈啰; 你好"), U(1, "hi", "喂; 嗨"),
+    U(1, "Good morning.", "早上好"), U(1, "I", "我"),
+    U(1, "am", "是"), U(1, "ah", "啊"),
+    U(1, "a", "一(个)"), U(1, "cat", "猫"),
+    U(1, "Miss", "小姐; 女士"), U(1, "Good afternoon.", "下午好"),
+    U(1, "class", "同学们"), U(1, "goodbye", "再见; 再会"),
+    U(1, "bye", "再见; 再会"),
+
     U(2, "what", "什么"), U(2, "is", "是"),
     U(2, "your", "你的; 你们的"), U(2, "name", "名字"),
-    U(2, "my", "我的"), U(2, "Nice to meet you", "很高兴认识你"),
+    U(2, "my", "我的"), U(2, "Nice to meet you!", "很高兴认识你"),
     U(2, "too", "也"), U(2, "boy", "男孩"),
+    U(2, "and", "和; 与"), U(2, "girl", "女孩"),
+    U(2, "Mr (AmE Mr.)", "先生"),
+
     U(3, "are", "是"), U(3, "you", "你; 你们"),
     U(3, "no", "不; 不是"), U(3, "not", "不; 没有"),
-    U(3, "yes", "是; 对"), U(3, "Here I am", "我在这里"),
-    U(3, "but", "但是"), U(3, "sorry", "对不起"),
+    U(3, "yes", "是; 对"), U(3, "ha", "笑声; 哈"),
+    U(3, "Here I am!", "我在这里"), U(3, "but", "但是"),
+    U(3, "oh", "啊; 哦"), U(3, "sorry", "对不起"),
+    U(3, "twin", "双胞胎之一"), U(3, "we", "我们"),
+    U(3, "excuse me", "对不起"), U(3, "class", "班级"),
+    U(3, "in", "在...内; 在...中"), U(3, "with", "和; 同"),
+    U(3, "right", "正确的"),
+
     U(4, "this", "这; 这个"), U(4, "friend", "朋友"),
     U(4, "she", "她"), U(4, "he", "他"),
     U(4, "it", "它"), U(4, "good", "好的"),
-    U(4, "Thank you", "谢谢你"), U(4, "have", "有; 持有"),
+    U(4, "Thank you.", "谢谢你"), U(4, "have", "有; 持有"),
+    U(4, "many", "许多"),
+
     U(5, "mother", "母亲; 妈妈"), U(5, "father", "父亲; 爸爸"),
-    U(5, "dad", "爸爸"), U(5, "mum", "妈妈"),
+    U(5, "dad", "爸爸"), U(5, "mum (AmE mom)", "妈妈"),
     U(5, "brother", "哥哥; 弟弟"), U(5, "baby", "婴儿"),
-    U(5, "sister", "姐姐; 妹妹"), U(5, "Good evening", "晚上好"),
-    U(6, "grandfather", "祖父; 外祖父"), U(6, "uncle", "叔伯; 舅姑父"),
-    U(6, "aunt", "姑姨; 舅伯母"), U(6, "grandmother", "祖母; 外祖母"),
+    U(5, "sister", "姐姐; 妹妹"), U(5, "Good evening.", "晚上好"),
+    U(5, "quick", "快; 快点"), U(5, "look", "看; 瞧"),
+    U(5, "the", "这个; 这些; 那个; 那些"), U(5, "pond", "池塘; 水池"),
+    U(5, "who", "谁; 什么人"), U(5, "great", "极好的; 好棒的"),
+    U(5, "come", "来"), U(5, "meet", "相识; 结识; 被引见介绍"),
+    U(5, "family", "家; 家庭"), U(5, "say", "说"),
+
+    U(6, "grandfather (grandpa)", "祖父; 外祖父"),
+    U(6, "uncle", "舅叔伯姑姨父"), U(6, "aunt", "舅婶伯姑姨母"),
+    U(6, "grandmother (grandma)", "祖母; 外祖母"),
     U(6, "cousin", "堂表兄弟姐妹"), U(6, "cool", "妙极的; 酷的"),
-    U(6, "me", "我"), U(6, "big", "大的"),
-    U(7, "Happy Birthday", "生日快乐"), U(7, "one", "一"),
+    U(6, "me", "我"), U(6, "wow", "哇; 呀"),
+    U(6, "big", "大的"), U(6, "it", "指性别不详的婴儿"),
+    U(6, "happy", "幸福的"), U(6, "love", "爱; 热爱"),
+
+    U(7, "Happy Birthday!", "生日快乐"), U(7, "one", "一"),
     U(7, "two", "二"), U(7, "three", "三"),
     U(7, "four", "四"), U(7, "five", "五"),
     U(7, "six", "六"), U(7, "seven", "七"),
-    U(8, "can", "能; 会"), U(8, "do", "做; 干"),
+    U(7, "eight", "八"), U(7, "nine", "九"),
+    U(7, "ten", "十"), U(7, "now", "现在; 此刻"),
+    U(7, "want", "要; 想要"), U(7, "car", "小汽车; 轿车"),
+    U(7, "book", "书"), U(7, "ball", "球"),
+    U(7, "cake", "蛋糕; 糕饼"), U(7, "How lovely!", "真可爱"),
+    U(7, "Can I help you?", "要帮忙吗"), U(7, "Yes, please.", "好的; 谢谢"),
+    U(7, "some", "一些"), U(7, "toy", "玩具"),
+    U(7, "for", "给; 对; 供"), U(7, "OK", "对; 好; 行"),
+    U(7, "How old are you?", "你多大了"), U(7, "please", "请"),
+    U(7, "here", "到这里; 在这里"), U(7, "love", "喜好; 喜爱"),
+    U(7, "Here you are.", "给你"), U(7, "You're welcome.", "别客气; 不用谢"),
+    U(7, "thanks", "谢谢"),
+
+    U(8, "can", "能; 会"), U(8, "do", "做; 干; 办(某事)"),
     U(8, "for", "为了"), U(8, "clean", "使干净; 打扫"),
     U(8, "table", "桌子"), U(8, "draw", "画; 描画"),
-    U(8, "sing", "唱歌"), U(8, "take pictures", "拍照"),
+    U(8, "sing", "唱歌; 演唱"), U(8, "take pictures", "拍照"),
+    U(8, "dance", "跳舞"), U(8, "Are you OK?", "你没事吧"),
+    U(8, "dizzy", "头晕目眩的; 眩晕的"), U(8, "picture", "图画; 绘画; 照片"),
+    U(8, "er", "哦; 嗯"), U(8, "fox", "狐狸"),
+    U(8, "child (pl. children)", "儿童; 小孩"), U(8, "thing", "事情"),
 };
 
-static const study_word_t G3B[STUDY_DECK_WORDS] = {
+static const study_word_t G3B[STUDY_STANDARD_DECK_WORDS] = {
     U(1, "school", "学校"), U(1, "pen", "钢笔"),
     U(1, "pencil", "铅笔"), U(1, "ruler", "直尺"),
     U(1, "rubber", "橡皮"), U(1, "schoolbag", "书包"),
@@ -81,7 +124,7 @@ static const study_word_t G3B[STUDY_DECK_WORDS] = {
     U(8, "green", "绿色的"), U(8, "brown", "棕色的"),
 };
 
-static const study_word_t G4A[STUDY_DECK_WORDS] = {
+static const study_word_t G4A[STUDY_STANDARD_DECK_WORDS] = {
     U(1, "subject", "学科; 科目"), U(1, "Chinese", "语文课"),
     U(1, "English", "英语课"), U(1, "Maths", "数学课"),
     U(1, "PE", "体育课"), U(1, "Art", "美术课"),
@@ -116,7 +159,7 @@ static const study_word_t G4A[STUDY_DECK_WORDS] = {
     U(8, "shirt", "男式衬衫"), U(8, "shorts", "短裤"),
 };
 
-static const study_word_t G4B[STUDY_DECK_WORDS] = {
+static const study_word_t G4B[STUDY_STANDARD_DECK_WORDS] = {
     U(1, "school", "学校"), U(1, "subject", "课程"),
     U(1, "Welcome back", "欢迎回来"), U(1, "see", "看见"),
     U(1, "timetable", "课程表"), U(1, "Chinese", "语文课"),
@@ -151,7 +194,7 @@ static const study_word_t G4B[STUDY_DECK_WORDS] = {
     U(8, "at school", "在学校"), U(8, "headache", "头疼"),
 };
 
-static const study_word_t G5A[STUDY_DECK_WORDS] = {
+static const study_word_t G5A[STUDY_STANDARD_DECK_WORDS] = {
     U(1, "bear", "熊"), U(1, "forest", "森林"),
     U(1, "there", "有"), U(1, "house", "房子"),
     U(1, "soup", "汤"), U(1, "just right", "正合适"),
@@ -186,7 +229,7 @@ static const study_word_t G5A[STUDY_DECK_WORDS] = {
     U(8, "put", "放"), U(8, "pretty", "漂亮的"),
 };
 
-static const study_word_t G5B[STUDY_DECK_WORDS] = {
+static const study_word_t G5B[STUDY_STANDARD_DECK_WORDS] = {
     U(1, "prince", "王子"), U(1, "fairy", "仙女"),
     U(1, "why", "为什么"), U(1, "because", "因为"),
     U(1, "clothes", "衣服"), U(1, "let", "让"),
@@ -221,7 +264,7 @@ static const study_word_t G5B[STUDY_DECK_WORDS] = {
     U(8, "March", "三月"), U(8, "July", "七月"),
 };
 
-static const study_word_t G6A[STUDY_DECK_WORDS] = {
+static const study_word_t G6A[STUDY_STANDARD_DECK_WORDS] = {
     U(1, "long long ago", "很久以前"), U(1, "magic", "有魔力的"),
     U(1, "clever", "聪明的"), U(1, "foolish", "愚蠢的"),
     U(1, "through", "穿过"), U(1, "laugh", "大笑"),
@@ -256,7 +299,7 @@ static const study_word_t G6A[STUDY_DECK_WORDS] = {
     U(8, "New Year's Day", "大年初一"), U(8, "red packet", "红包"),
 };
 
-static const study_word_t G6B[STUDY_DECK_WORDS] = {
+static const study_word_t G6B[STUDY_STANDARD_DECK_WORDS] = {
     U(1, "mouse", "老鼠"), U(1, "large", "大的"),
     U(1, "strong", "强壮的"), U(1, "walk by", "走过"),
     U(1, "wake up", "吵醒"), U(1, "some day", "某一天"),
@@ -292,21 +335,21 @@ static const study_word_t G6B[STUDY_DECK_WORDS] = {
 };
 
 const study_deck_t STUDY_DECKS[STUDY_DECK_COUNT] = {
-    { "g3a24", 3, true,  "2024新课标", { "问候", "姓名", "确认身份", "介绍朋友", "家庭成员", "大家庭", "生日", "帮助家人" }, G3A },
-    { "g3b24", 3, false, "2024新课标", { "学习用品", "打扫教室", "校园规则", "课后活动", "水果", "农场", "动物", "颜色" }, G3B },
-    { "g4a25", 4, true,  "2025新课标", { "学科", "一天作息", "一周计划", "体育运动", "外貌", "天气", "四季", "服装" }, G4A },
-    { "g4b13", 4, false, "2013版", { "学校课程", "课后", "我的一天", "公园画画", "季节", "化装舞会", "身体感受", "打电话" }, G4B },
-    { "g5a14", 5, true,  "2014版", { "金发女孩", "新同学", "动物朋友", "爱好", "职业", "网友", "周末", "圣诞节" }, G5A },
-    { "g5b14", 5, false, "2014版", { "灰姑娘", "上学方式", "问路", "看医生", "帮助父母", "厨房", "中国节日", "生日" }, G5B },
-    { "g6a14", 6, true,  "2014版", { "皇帝的新衣", "天气", "假日趣事", "过去与现在", "公共标识", "城市环境", "保护地球", "中国新年" }, G6A },
-    { "g6b14", 6, false, "2014版", { "狮子和老鼠", "好习惯", "健康饮食", "道路安全", "派对", "有趣的国家", "暑假计划", "梦想" }, G6B },
+    { "g3a24full", 3, true,  "2024新课标", { "问候", "姓名", "确认身份", "介绍朋友", "家庭成员", "大家庭", "生日", "帮助家人" }, G3A, WORDS_COUNT(G3A) },
+    { "g3b24", 3, false, "2024新课标", { "学习用品", "打扫教室", "校园规则", "课后活动", "水果", "农场", "动物", "颜色" }, G3B, WORDS_COUNT(G3B) },
+    { "g4a25", 4, true,  "2025新课标", { "学科", "一天作息", "一周计划", "体育运动", "外貌", "天气", "四季", "服装" }, G4A, WORDS_COUNT(G4A) },
+    { "g4b13", 4, false, "2013版", { "学校课程", "课后", "我的一天", "公园画画", "季节", "化装舞会", "身体感受", "打电话" }, G4B, WORDS_COUNT(G4B) },
+    { "g5a14", 5, true,  "2014版", { "金发女孩", "新同学", "动物朋友", "爱好", "职业", "网友", "周末", "圣诞节" }, G5A, WORDS_COUNT(G5A) },
+    { "g5b14", 5, false, "2014版", { "灰姑娘", "上学方式", "问路", "看医生", "帮助父母", "厨房", "中国节日", "生日" }, G5B, WORDS_COUNT(G5B) },
+    { "g6a14", 6, true,  "2014版", { "皇帝的新衣", "天气", "假日趣事", "过去与现在", "公共标识", "城市环境", "保护地球", "中国新年" }, G6A, WORDS_COUNT(G6A) },
+    { "g6b14", 6, false, "2014版", { "狮子和老鼠", "好习惯", "健康饮食", "道路安全", "派对", "有趣的国家", "暑假计划", "梦想" }, G6B, WORDS_COUNT(G6B) },
 };
 
-_Static_assert(sizeof(G3A) / sizeof(G3A[0]) == STUDY_DECK_WORDS, "三上核心词数量错误");
-_Static_assert(sizeof(G3B) / sizeof(G3B[0]) == STUDY_DECK_WORDS, "三下核心词数量错误");
-_Static_assert(sizeof(G4A) / sizeof(G4A[0]) == STUDY_DECK_WORDS, "四上核心词数量错误");
-_Static_assert(sizeof(G4B) / sizeof(G4B[0]) == STUDY_DECK_WORDS, "四下核心词数量错误");
-_Static_assert(sizeof(G5A) / sizeof(G5A[0]) == STUDY_DECK_WORDS, "五上核心词数量错误");
-_Static_assert(sizeof(G5B) / sizeof(G5B[0]) == STUDY_DECK_WORDS, "五下核心词数量错误");
-_Static_assert(sizeof(G6A) / sizeof(G6A[0]) == STUDY_DECK_WORDS, "六上核心词数量错误");
-_Static_assert(sizeof(G6B) / sizeof(G6B[0]) == STUDY_DECK_WORDS, "六下核心词数量错误");
+_Static_assert(WORDS_COUNT(G3A) == 127, "三上完整词表数量错误");
+_Static_assert(WORDS_COUNT(G3B) == STUDY_STANDARD_DECK_WORDS, "三下核心词数量错误");
+_Static_assert(WORDS_COUNT(G4A) == STUDY_STANDARD_DECK_WORDS, "四上核心词数量错误");
+_Static_assert(WORDS_COUNT(G4B) == STUDY_STANDARD_DECK_WORDS, "四下核心词数量错误");
+_Static_assert(WORDS_COUNT(G5A) == STUDY_STANDARD_DECK_WORDS, "五上核心词数量错误");
+_Static_assert(WORDS_COUNT(G5B) == STUDY_STANDARD_DECK_WORDS, "五下核心词数量错误");
+_Static_assert(WORDS_COUNT(G6A) == STUDY_STANDARD_DECK_WORDS, "六上核心词数量错误");
+_Static_assert(WORDS_COUNT(G6B) == STUDY_STANDARD_DECK_WORDS, "六下核心词数量错误");

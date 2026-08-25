@@ -1,11 +1,11 @@
 /*
  * 面向小学三至六年级的离线单词学习模式。
  *
- * 一轮只放 8 个词：先逐张认识，再用同一组词做三选一。这个顺序故意不让
- * 孩子一上来就猜陌生词；选项也只来自刚看过的 8 个词，测的是短时提取，
+ * 一轮学习所选单元的完整词表：先逐张认识，再用同一组词做三选一。这个顺序
+ * 故意不让孩子一上来就猜陌生词；选项也只来自刚看过的同单元词，测的是短时提取，
  * 不是靠排除完全陌生的干扰项碰运气。
  *
- * 先选教材，再选 Unit；一轮严格学习所选单元的 8 个词，不把别的单元混进来。
+ * 先选教材，再选 Unit；每单元词数来自教材数据，不把别的单元混进来。
  * 掌握度分 0..3 四档，答对升一档，答错至少回到“待复习”。没有可靠时钟，
  * 不能假装做按天的间隔重复；同一单元经过三轮成功提取才进入“已掌握”。
  */
@@ -31,11 +31,9 @@
 
 static const char *TAG = "words";
 
-#define WORD_COUNT       STUDY_DECK_WORDS
-#define SESSION_WORDS     8
 #define POLL_MS          16
 #define PROGRESS_MAGIC    0x574F5244u  /* "WORD" */
-#define PROGRESS_VERSION  2
+#define PROGRESS_VERSION  3
 
 #define C_OK   RGB565(42, 116, 54)
 #define C_BAD  RGB565(174, 62, 48)
@@ -48,13 +46,26 @@ typedef struct {
     uint16_t new_cursor;
     uint16_t review_cursor;
     uint32_t rounds;
-    uint8_t level[WORD_COUNT];
+    uint8_t level[STUDY_DECK_WORDS_MAX];
 } study_progress_t;
 
+/* v2 固定 64 词。完整三上启用 127 词时只更换三上的 NVS 键；其余七册可从
+ * 旧结构按原索引迁移，避免一次数据结构升级清空所有已学进度。 */
 typedef struct {
-    int word[SESSION_WORDS];
-    int quiz_order[SESSION_WORDS];
-    int8_t quiz_result[SESSION_WORDS];  /* -1=未答，0=错，1=对；只服务本轮顶部进度条 */
+    uint32_t magic;
+    uint16_t version;
+    uint16_t word_count;
+    uint16_t new_cursor;
+    uint16_t review_cursor;
+    uint32_t rounds;
+    uint8_t level[STUDY_STANDARD_DECK_WORDS];
+} study_progress_v2_t;
+
+typedef struct {
+    int word[STUDY_UNIT_WORDS_MAX];
+    int quiz_order[STUDY_UNIT_WORDS_MAX];
+    int8_t quiz_result[STUDY_UNIT_WORDS_MAX];
+    int count;
 } study_session_t;
 
 typedef enum {
@@ -152,38 +163,76 @@ static void draw_frame(void)
     display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_GB2);
 }
 
+static void unit_word_range(const study_deck_t *deck, int unit,
+                            int *first, int *count)
+{
+    int begin = -1;
+    int total = 0;
+    for (int i = 0; i < deck->word_count; i++) {
+        if (deck->words[i].unit != unit) continue;
+        if (begin < 0) begin = i;
+        total++;
+    }
+    *first = begin < 0 ? 0 : begin;
+    *count = total;
+}
+
+static int unit_word_count(const study_deck_t *deck, int unit)
+{
+    int first;
+    int count;
+    unit_word_range(deck, unit, &first, &count);
+    return count;
+}
+
 static int count_level(const study_progress_t *progress, int minimum)
 {
     int count = 0;
-    for (int i = 0; i < WORD_COUNT; i++) {
+    for (int i = 0; i < progress->word_count; i++) {
         if (progress->level[i] >= minimum) count++;
     }
     return count;
 }
 
-static int count_unit_level(const study_progress_t *progress, int unit, int minimum)
+static int count_unit_level(const study_progress_t *progress,
+                            const study_deck_t *deck, int unit, int minimum)
 {
     int count = 0;
-    int first = unit * SESSION_WORDS;
-    for (int i = first; i < first + SESSION_WORDS; i++) {
+    int first;
+    int unit_count;
+    unit_word_range(deck, unit, &first, &unit_count);
+    for (int i = first; i < first + unit_count; i++) {
         if (progress->level[i] >= minimum) count++;
     }
     return count;
+}
+
+static void draw_segment_bar(const study_session_t *session, int current,
+                             bool show_quiz_results, int y, int height)
+{
+    int count = session->count;
+    int gap = count <= 8 ? 6 : 2;
+    int available = count <= 8 ? 146 : DISP_FB_W - 36;
+    int width = (available - gap * (count - 1)) / count;
+    int used = width * count + gap * (count - 1);
+    int x0 = (DISP_FB_W - used) / 2;
+
+    for (int i = 0; i < count; i++) {
+        uint16_t color;
+        if (show_quiz_results && session->quiz_result[i] >= 0) {
+            color = session->quiz_result[i] ? C_OK : C_BAD;
+        } else {
+            color = i < current ? C_GOLD : (i == current ? C_GB3 : C_GB1);
+        }
+        display_fill_rect(x0 + i * (width + gap), y, width, height, color);
+    }
 }
 
 static void draw_card_header(const view_t *view, const char *title)
 {
     text_center_latin_16(7, title, C_GB3, 1);
-    for (int i = 0; i < SESSION_WORDS; i++) {
-        uint16_t color;
-        if (view->kind == VIEW_QUIZ && view->session->quiz_result[i] >= 0) {
-            /* 判题后当前格立即落色，孩子不用等到下一题才看到结果。 */
-            color = view->session->quiz_result[i] ? C_OK : C_BAD;
-        } else {
-            color = i < view->pos ? C_GOLD : (i == view->pos ? C_GB3 : C_GB1);
-        }
-        display_fill_rect(71 + i * 19, 31, 13, 4, color);
-    }
+    /* 最多 31 格（完整三上 Unit 7），按单元词数自动压缩，仍保留逐题红绿反馈。 */
+    draw_segment_bar(view->session, view->pos, view->kind == VIEW_QUIZ, 31, 4);
     display_hline(18, 42, DISP_FB_W - 36, C_GB2);
 }
 
@@ -235,9 +284,11 @@ static void draw_unit_select(const view_t *view)
         text_center_16_box(x, 128, y + 5, line, text);
     }
 
-    int learned = count_unit_level(view->progress, view->selected, 1);
-    int mastered = count_unit_level(view->progress, view->selected, 3);
-    snprintf(line, sizeof(line), "本单元 已学%d/8  掌握%d/8", learned, mastered);
+    int unit_count = unit_word_count(view->deck, view->selected);
+    int learned = count_unit_level(view->progress, view->deck, view->selected, 1);
+    int mastered = count_unit_level(view->progress, view->deck, view->selected, 3);
+    snprintf(line, sizeof(line), "本单元 已学%d/%d  掌握%d/%d",
+             learned, unit_count, mastered, unit_count);
     text_center_16(186, line, C_GB2);
     text_center_16(207, "方向选择  A确认  B返回", C_GB3);
 }
@@ -245,8 +296,9 @@ static void draw_unit_select(const view_t *view)
 static void draw_home(const view_t *view)
 {
     char line[48];
-    int learned = count_unit_level(view->progress, view->unit, 1);
-    int mastered = count_unit_level(view->progress, view->unit, 3);
+    int unit_count = unit_word_count(view->deck, view->unit);
+    int learned = count_unit_level(view->progress, view->deck, view->unit, 1);
+    int mastered = count_unit_level(view->progress, view->deck, view->unit, 3);
 
     draw_frame();
     draw_study_word("WORD QUEST", 26, 2);
@@ -258,9 +310,11 @@ static void draw_home(const view_t *view)
              view->deck->unit_titles[view->unit]);
     text_center_16(92, line, C_GB3);
 
-    snprintf(line, sizeof(line), "已学习 %d/8   已掌握 %d/8", learned, mastered);
+    snprintf(line, sizeof(line), "已学习 %d/%d   已掌握 %d/%d",
+             learned, unit_count, mastered, unit_count);
     text_center_16(124, line, C_GB2);
-    text_center_16(149, "本轮学习教材顺序中的8个词", C_GB2);
+    snprintf(line, sizeof(line), "本轮学习本单元全部%d项", unit_count);
+    text_center_16(149, line, C_GB2);
     if (!view->audio_ok) {
         text_center_16(176, "英式发音包未安装 学习仍可继续", C_BAD);
     } else if (!view->storage_ok) {
@@ -343,26 +397,25 @@ static void draw_quiz(const view_t *view)
 static void draw_result(const view_t *view)
 {
     char line[48];
-    int mastered = count_unit_level(view->progress, view->unit, 3);
+    int mastered = count_unit_level(view->progress, view->deck, view->unit, 3);
+    int count = view->session->count;
+    bool strong_score = view->score * 4 >= count * 3;
 
     draw_frame();
     text_center_latin_16(15, "ROUND COMPLETE", C_GB3, 1);
     text_center_16(52, "本轮得分", C_GB2);
-    snprintf(line, sizeof(line), "%d / %d", view->score, SESSION_WORDS);
-    text_center_ascii(76, line, view->score >= 6 ? C_OK : C_GB3, 4);
+    snprintf(line, sizeof(line), "%d / %d", view->score, count);
+    text_center_ascii(76, line, strong_score ? C_OK : C_GB3, 4);
 
-    for (int i = 0; i < SESSION_WORDS; i++) {
-        uint16_t color = i < view->score ? C_GOLD : C_GB1;
-        display_fill_rect(48 + i * 24, 118, 16, 8, color);
-    }
-    if (view->score == SESSION_WORDS) {
+    draw_segment_bar(view->session, count, true, 118, 8);
+    if (view->score == count) {
         text_center_16(139, "太棒了 全部答对!", C_OK);
-    } else if (view->score >= 6) {
+    } else if (strong_score) {
         text_center_16(139, "很好 错词下轮会再来", C_GB3);
     } else {
         text_center_16(139, "慢慢来 记牢比求快重要", C_GB3);
     }
-    snprintf(line, sizeof(line), "本单元已掌握 %d/%d", mastered, SESSION_WORDS);
+    snprintf(line, sizeof(line), "本单元已掌握 %d/%d", mastered, count);
     text_center_16(169, line, C_GB2);
     text_center_16(199, "A 再来一轮   B 返回", C_GB3);
 }
@@ -389,17 +442,17 @@ static void render(view_t *view)
     display_stream_sync(draw_strip, view);
 }
 
-static void progress_default(study_progress_t *progress)
+static void progress_default(study_progress_t *progress, const study_deck_t *deck)
 {
     memset(progress, 0, sizeof(*progress));
     progress->magic = PROGRESS_MAGIC;
     progress->version = PROGRESS_VERSION;
-    progress->word_count = WORD_COUNT;
+    progress->word_count = deck->word_count;
 }
 
 static void progress_load(study_progress_t *progress, const study_deck_t *deck)
 {
-    progress_default(progress);
+    progress_default(progress, deck);
     s_storage_ok = false;
 
     esp_err_t err = nvs_flash_init();
@@ -416,17 +469,46 @@ static void progress_load(study_progress_t *progress, const study_deck_t *deck)
     }
     s_storage_ok = true;
 
-    study_progress_t saved;
-    size_t size = sizeof(saved);
-    err = nvs_get_blob(s_nvs, deck->progress_key, &saved, &size);
-    if (err == ESP_OK && size == sizeof(saved) && saved.magic == PROGRESS_MAGIC &&
-        saved.version == PROGRESS_VERSION && saved.word_count == WORD_COUNT &&
-        saved.new_cursor < WORD_COUNT && saved.review_cursor < WORD_COUNT) {
+    size_t size = 0;
+    err = nvs_get_blob(s_nvs, deck->progress_key, NULL, &size);
+    if (err == ESP_OK && size == sizeof(study_progress_t)) {
+        study_progress_t saved;
+        err = nvs_get_blob(s_nvs, deck->progress_key, &saved, &size);
         bool levels_ok = true;
-        for (int i = 0; i < WORD_COUNT; i++) {
-            if (saved.level[i] > 3) levels_ok = false;
+        if (err == ESP_OK) {
+            for (int i = 0; i < deck->word_count; i++) {
+                if (saved.level[i] > 3) levels_ok = false;
+            }
+        } else {
+            levels_ok = false;
         }
-        if (levels_ok) *progress = saved;
+        if (err == ESP_OK && saved.magic == PROGRESS_MAGIC &&
+            saved.version == PROGRESS_VERSION &&
+            saved.word_count == deck->word_count &&
+            saved.new_cursor < deck->word_count &&
+            saved.review_cursor < deck->word_count && levels_ok) {
+            *progress = saved;
+        } else {
+            ESP_LOGW(TAG, "学习进度内容不兼容，从第一课开始");
+        }
+    } else if (err == ESP_OK && size == sizeof(study_progress_v2_t) &&
+               deck->word_count == STUDY_STANDARD_DECK_WORDS) {
+        study_progress_v2_t saved;
+        err = nvs_get_blob(s_nvs, deck->progress_key, &saved, &size);
+        if (err == ESP_OK && saved.magic == PROGRESS_MAGIC && saved.version == 2 &&
+            saved.word_count == STUDY_STANDARD_DECK_WORDS) {
+            bool levels_ok = true;
+            for (int i = 0; i < STUDY_STANDARD_DECK_WORDS; i++) {
+                if (saved.level[i] > 3) levels_ok = false;
+            }
+            if (levels_ok) {
+                memcpy(progress->level, saved.level, sizeof(saved.level));
+                progress->new_cursor = saved.new_cursor;
+                progress->review_cursor = saved.review_cursor;
+                progress->rounds = saved.rounds;
+                ESP_LOGI(TAG, "学习进度已从 v2 无损迁移到可变词表格式");
+            }
+        }
     } else if (err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "旧学习进度格式不兼容，从第一课开始");
     }
@@ -442,15 +524,17 @@ static void progress_save(const study_progress_t *progress, const study_deck_t *
     }
 }
 
-static void session_build(study_session_t *session, int unit)
+static void session_build(study_session_t *session,
+                          const study_deck_t *deck, int unit)
 {
-    int first = unit * SESSION_WORDS;
-    for (int i = 0; i < SESSION_WORDS; i++) {
+    int first;
+    unit_word_range(deck, unit, &first, &session->count);
+    for (int i = 0; i < session->count; i++) {
         session->word[i] = first + i;
         session->quiz_order[i] = i;
         session->quiz_result[i] = -1;
     }
-    for (int i = SESSION_WORDS - 1; i > 0; i--) {
+    for (int i = session->count - 1; i > 0; i--) {
         int j = random_next() % (i + 1);
         int t = session->quiz_order[i];
         session->quiz_order[i] = session->quiz_order[j];
@@ -463,8 +547,8 @@ static void quiz_options(const study_session_t *session, int quiz_pos, view_t *v
     int correct_pos = session->quiz_order[quiz_pos];
     int other1;
     int other2;
-    do other1 = random_next() % SESSION_WORDS; while (other1 == correct_pos);
-    do other2 = random_next() % SESSION_WORDS;
+    do other1 = random_next() % session->count; while (other1 == correct_pos);
+    do other2 = random_next() % session->count;
     while (other2 == correct_pos || other2 == other1);
 
     view->correct_slot = random_next() % 3;
@@ -484,11 +568,11 @@ static void quiz_options(const study_session_t *session, int quiz_pos, view_t *v
 static bool run_session(study_progress_t *progress, view_t *view)
 {
     study_session_t session;
-    session_build(&session, view->unit);
+    session_build(&session, view->deck, view->unit);
     view->session = &session;
     bool dirty = false;
 
-    for (int pos = 0; pos < SESSION_WORDS; pos++) {
+    for (int pos = 0; pos < session.count; pos++) {
         view->pos = pos;
         view->kind = VIEW_CARD_FRONT;
         render(view);
@@ -522,7 +606,7 @@ static bool run_session(study_progress_t *progress, view_t *view)
     }
 
     view->score = 0;
-    for (int pos = 0; pos < SESSION_WORDS; pos++) {
+    for (int pos = 0; pos < session.count; pos++) {
         view->kind = VIEW_QUIZ;
         view->pos = pos;
         view->selected = 0;
@@ -574,12 +658,19 @@ static bool run_session(study_progress_t *progress, view_t *view)
     progress_save(progress, view->deck);
     view->kind = VIEW_RESULT;
     render(view);
-    if (view->score == SESSION_WORDS) word_audio_play_quiz_perfect();
+    if (view->score == session.count) word_audio_play_quiz_perfect();
     return true;
 }
 
 static void run_unit(const study_deck_t *deck, int unit, study_progress_t *progress)
 {
+    int unit_count = unit_word_count(deck, unit);
+    if (unit_count < 3 || unit_count > STUDY_UNIT_WORDS_MAX) {
+        ESP_LOGE(TAG, "Unit %d 词数 %d 超出可测验范围 3..%d",
+                 unit + 1, unit_count, STUDY_UNIT_WORDS_MAX);
+        return;
+    }
+
     view_t view = {
         .kind = VIEW_HOME,
         .deck = deck,
@@ -629,9 +720,9 @@ static void run_deck(const study_deck_t *deck)
     study_progress_t progress;
     progress_load(&progress, deck);
 
-    ESP_LOGI(TAG, "%d年级%s册（%s）：%d 个核心词，已掌握 %d 个",
+    ESP_LOGI(TAG, "%d年级%s册（%s）：%u 个词条，已掌握 %d 个",
              deck->grade, deck->upper ? "上" : "下", deck->revision,
-             WORD_COUNT, count_level(&progress, 3));
+             (unsigned)deck->word_count, count_level(&progress, 3));
 
     view_t view = {
         .kind = VIEW_UNIT_SELECT,
@@ -665,10 +756,11 @@ static void run_deck(const study_deck_t *deck)
                 view.selected = (view.selected + delta + STUDY_UNIT_COUNT) % STUDY_UNIT_COUNT;
                 render(&view);
             } else if (edge & (NES_PAD_A | NES_PAD_START)) {
-                ESP_LOGI(TAG, "选择 Unit %d（%s），已学习 %d/8，已掌握 %d/8",
+                int unit_count = unit_word_count(deck, view.selected);
+                ESP_LOGI(TAG, "选择 Unit %d（%s），已学习 %d/%d，已掌握 %d/%d",
                          view.selected + 1, deck->unit_titles[view.selected],
-                         count_unit_level(&progress, view.selected, 1),
-                         count_unit_level(&progress, view.selected, 3));
+                         count_unit_level(&progress, deck, view.selected, 1), unit_count,
+                         count_unit_level(&progress, deck, view.selected, 3), unit_count);
                 run_unit(deck, view.selected, &progress);
                 break;
             }

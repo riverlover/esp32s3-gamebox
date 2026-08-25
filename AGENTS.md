@@ -21,7 +21,7 @@ idf.py flash-word-audio                                   # 只在教材词表/�
 - 端口是板载 FT232R（丝印 `COM` 的 Type-C 口）。`A5069RR4` 是这颗芯片的序列号，
   换板子会变，用 `ls /dev/cu.usbserial-*` 确认。
 - `flash-word-audio` 是顶层 `CMakeLists.txt` 注册的自定义 target，**故意不挂在 `idf.py flash` 上**：
-  英式发音包约 3.23 MiB，烧一次仍较久，而教材词表几乎不变。
+  英式发音包约 3.62 MiB，烧一次仍较久，而教材词表几乎不变。
   烧录时间只跟镜像实际字节数走（`esptool write_flash` 写的是文件），跟分区开多大无关。
 - `sdkconfig` 不入库，由 `sdkconfig.defaults` 生成。要固化配置就改 `.defaults`，
   别改 `sdkconfig`（会被覆盖）。
@@ -65,9 +65,11 @@ idf.py flash-word-audio                                   # 只在教材词表/�
 ## 架构
 
 启动链：`app_main`（main.c）→ `nes_emu_prealloc` → `display_init` → GAME/WORDS/TEST；
-WORDS 在 `word_study_run()` 内可反复换年级、册次和单元；卡片正面自动播放英式发音，
-X 可重播，QUIZ 判题时答对/答错分别播放上升/下降 8-bit 掌机音效，顶部对应进度格
-同步变绿/红，一轮 8/8 在结果页播放专属过关短曲；返回后会释放 24 kHz I2S，
+WORDS 在 `word_study_run()` 内可反复换年级、册次和单元；三上按教材 Word lists
+完整收录 127 项（各单元 13/11/17/9/18/12/31/16），其余分册暂为每单元 8 个核心词；
+卡片正面自动播放英式发音，X 可重播，QUIZ 判题时答对/答错分别播放上升/下降
+8-bit 掌机音效，顶部对应进度格同步变绿/红，本单元全部答对时在结果页播放专属
+过关短曲；返回后会释放 24 kHz I2S，
 再回到开机模式选择；
 GAME/TEST 再进 `rom_menu_pick`；游戏列表 B 返回平台页，平台页 B 返回开机模式选择，
 两页都用 X 调音量、Y 调背光；选定后进入对应模拟器（不返回）。

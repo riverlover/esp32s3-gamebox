@@ -1,7 +1,7 @@
 /*
  * WORDS 离线英式发音包。
  *
- * 468 个不重复词条按 FNV-1a 哈希排序，板上只留约 7.5 KB 索引；PCM 用
+ * 524 个不重复词条按 FNV-1a 哈希排序，板上只留约 8.2 KB 索引；PCM 用
  * 4-bit IMA ADPCM 保存到独立 13 MB data 分区，播放时每次从 flash 读 256
  * 字节、解成 20 ms 立体声包送公共 I2S。既不占 app 分区，也不把整段语音
  * 搬进 RAM。生成格式的另一半在 tools/build_word_audio.py。
@@ -400,7 +400,7 @@ void word_audio_play_quiz_perfect(void)
 {
     if (!s_available) return;
     uint32_t request = REQUEST_QUIZ_PERFECT;
-    ESP_LOGI(TAG, "QUIZ 音效：8/8 全对");
+    ESP_LOGI(TAG, "QUIZ 音效：本单元全对");
     xQueueOverwrite(s_requests, &request);
 }
 

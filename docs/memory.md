@@ -68,14 +68,14 @@ Flash 和 PSRAM 是两套独立资源。游戏已经全部从 TF 卡装载；原
 | NVS | `0x009000` | 24 KiB | ESP-IDF 预留的持久配置空间 |
 | PHY init | `0x00F000` | 4 KiB | ESP-IDF PHY 数据 |
 | factory app | `0x010000` | 2 MiB | 含 Gwenesis 的固件约 1.55 MiB，余约 457 KiB |
-| word_audio | `0x210000` | 13 MiB | 468 个英式发音；24 kHz IMA ADPCM 约 3.23 MiB |
+| word_audio | `0x210000` | 13 MiB | 524 个英式发音；24 kHz IMA ADPCM 约 3.62 MiB |
 | snes_save | `0xF10000` | 960 KiB | SMW 即时存档，FAT + wear levelling |
 
 `word_audio` 分区止于 `0xF10000`，其后的 960 KiB 已全部分给 `snes_save`。语音包只在
 教材词表或合成参数变化时用 `idf.py flash-word-audio` 单独烧录，普通 `idf.py flash` 不更新它；
 普通烧固件会更新分区表，但不会主动擦除已有的存档分区。
 
-发音索引只有约 7.5 KiB，进入 WORDS 后放在 PSRAM；每次从 flash 读取 256 字节，
+发音索引只有约 8.2 KiB，进入 WORDS 后放在 PSRAM；每次从 flash 读取 256 字节，
 解码成 20 ms PCM 包送公共 I2S。返回首页时释放索引、播放任务和 I2S，随后进入
 Genesis 才能按它自己的约 26.4 kHz 重新配置，不能让 WORDS 的 24 kHz 通道常驻。
 

@@ -44,8 +44,14 @@ SPEAK_AS = {
     "UK": "U K",
     "USA": "U S A",
     "TV": "T V",
+    "OK": "okay",
     "Mrs": "missus",
     "Mr": "mister",
+    "Mr (AmE Mr.)": "mister",
+    "mum (AmE mom)": "mum",
+    "grandfather (grandpa)": "grandfather, grandpa",
+    "grandmother (grandma)": "grandmother, grandma",
+    "child (pl. children)": "child, children",
     "jiaozi": "jiao zi",
     "tangyuan": "tang yuan",
 }
@@ -63,8 +69,8 @@ def load_words(source: Path) -> list[str]:
     text = source.read_text(encoding="utf-8")
     raw_words = re.findall(r'\bU\(\s*\d+\s*,\s*"((?:\\.|[^"\\])*)"', text)
     words = [ast.literal_eval(f'"{raw}"') for raw in raw_words]
-    if len(words) != 512:
-        raise RuntimeError(f"应从 8 册教材读到 512 条，实际 {len(words)} 条")
+    if len(words) != 575:
+        raise RuntimeError(f"应从 8 册教材读到 575 条，实际 {len(words)} 条")
     return list(dict.fromkeys(words))
 
 
