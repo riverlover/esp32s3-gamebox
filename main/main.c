@@ -452,7 +452,6 @@ void app_main(void)
      * SNES 尤其不能先读出 4 MiB 再复制一份，否则 8 MiB PSRAM 会在峰值时耗尽。
      * 卡不可用时 entry 留 NULL，NES 继续走编译期嵌入 ROM 的回退路径。 */
     const rom_store_entry_t *entry = NULL;
-    uint16_t launch_keys = 0;
     while (1) {
         boot_mode_t boot_mode = boot_menu();
         if (boot_mode == BOOT_MODE_WORDS) {
@@ -467,7 +466,7 @@ void app_main(void)
         rom_store_init(refresh_rom_index);
         refresh_rom_index = false;  /* 同一次开机只强制重扫一次，返回菜单不再重扫 */
 
-        rom_menu_result_t menu_result = rom_menu_pick(&entry, &launch_keys);
+        rom_menu_result_t menu_result = rom_menu_pick(&entry);
         if (menu_result == ROM_MENU_BACK) continue;
         break;  /* 已选游戏，或目录不可用而回退到内置 NES */
     }
@@ -489,7 +488,7 @@ void app_main(void)
 
     rom_system_t system = run_entry ? run_entry->system : ROM_SYSTEM_NES;
     esp_err_t run_err = system == ROM_SYSTEM_NES     ? nes_emu_run(run_entry)
-                      : system == ROM_SYSTEM_SNES    ? snes_emu_run(run_entry, launch_keys)
+                      : system == ROM_SYSTEM_SNES    ? snes_emu_run(run_entry)
                       : system == ROM_SYSTEM_GENESIS ? genesis_emu_run(run_entry)
                                                      : gbc_emu_run(run_entry);
     if (run_err != ESP_OK) {

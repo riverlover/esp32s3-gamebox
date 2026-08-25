@@ -37,8 +37,7 @@ static const char *TAG = "input";
 #define RX_BUF      512
 
 /* 位数按 GAMEPAD_BIT_Y(0x200) 取到 10 —— 低 8 位和 NES_PAD_* 一致，
- * 高两位是 SNES 的 X/Y。不补上这两位，串口这条调试后路就够不到
- * 「SELECT+X 读档」和启动时的 X/Y 修饰键。 */
+ * 高两位是 SNES 的 X/Y，串口调试也要覆盖完整四面键。 */
 #define PAD_BITS    10
 
 static int64_t  s_until[PAD_BITS];  /* 每个按键位的保持截止时间（微秒） */
@@ -112,7 +111,9 @@ void input_serial_init(void)
     printf("\n串口手柄已启用：\n");
     printf("  方向  W A S D  或 方向键\n");
     printf("  A(跳) K 或 Z      B(跑) J 或 X\n");
+    printf("  SNES X U          SNES Y I\n");
     printf("  START 回车        SELECT Tab\n");
+    printf("  游戏菜单 SELECT+SNES X（Tab+U）\n");
     printf("  按键卡住了敲空格全部松开\n");
     printf("  注意：串口没有「松手」事件，按住不放靠终端的按键重复维持\n\n");
 }

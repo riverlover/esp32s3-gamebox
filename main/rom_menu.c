@@ -267,7 +267,7 @@ static void draw_games(int count, const category_t *cat, int sel)
     display_stream_sync(draw_strip, &a);
 }
 
-rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launch_keys)
+rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry)
 {
     int count = rom_store_init(false);
     if (count <= 0) {
@@ -358,7 +358,6 @@ rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry, uint16_t *launc
                 const rom_store_entry_t *e = i >= 0 ? rom_store_entry(i) : NULL;
                 if (e) {
                     *entry = e;
-                    *launch_keys = now;
                     if (e->storage == ROM_STORAGE_ZIP_PENDING) {
                         printf("选中：[%s] %s（ZIP，按需识别）\n  %s\n\n",
                                system_name(e->system), e->name, e->path);

@@ -68,20 +68,19 @@ Flash 和 PSRAM 是两套独立资源。游戏已经全部从 TF 卡装载；原
 | NVS | `0x009000` | 24 KiB | ESP-IDF 预留的持久配置空间 |
 | PHY init | `0x00F000` | 4 KiB | ESP-IDF PHY 数据 |
 | factory app | `0x010000` | 2 MiB | 含 Gwenesis 的固件约 1.55 MiB，余约 457 KiB |
-| word_audio | `0x210000` | 13 MiB | 524 个英式发音；24 kHz IMA ADPCM 约 3.62 MiB |
-| snes_save | `0xF10000` | 960 KiB | SMW 即时存档，FAT + wear levelling |
+| word_audio | `0x210000` | 13.94 MiB | 524 个英式发音；24 kHz IMA ADPCM 约 3.62 MiB |
 
-`word_audio` 分区止于 `0xF10000`，其后的 960 KiB 已全部分给 `snes_save`。语音包只在
-教材词表或合成参数变化时用 `idf.py flash-word-audio` 单独烧录，普通 `idf.py flash` 不更新它；
-普通烧固件会更新分区表，但不会主动擦除已有的存档分区。
+即时存档统一放在 TF 卡 `/gamebox/saves/<平台>/`，Flash 不再划游戏专用分区。
+`word_audio` 从 `0x210000` 连续使用到 16 MiB Flash 末尾。语音包只在教材词表或合成参数
+变化时用 `idf.py flash-word-audio` 单独烧录，普通 `idf.py flash` 不更新它。
 
 发音索引只有约 8.2 KiB，进入 WORDS 后放在 PSRAM；每次从 flash 读取 256 字节，
 解码成 20 ms PCM 包送公共 I2S。返回首页时释放索引、播放任务和 I2S，随后进入
 Genesis 才能按它自己的约 26.4 kHz 重新配置，不能让 WORDS 的 24 kHz 通道常驻。
 
-SMW 单份未压缩即时状态固定为 365,120 字节（356.6 KiB）。存档层使用两个交替文件：
-写新槽期间保留上一槽，完整关闭文件、重新读取并校验 CRC 后才提交元数据。RST 或断电
-发生在保存中途时，下次会回退到上一份；ROM CRC 和格式版本不匹配时拒绝加载。
+四个模拟器各保留核心自己的快照格式，每个 ROM 提供四个槽。宿主先写 `.tmp`，再把
+旧正式档改名为 `.bak`，最后提交新档；保存中途复位不会直接覆盖旧档，正式档读取失败
+时还会尝试备份。目录和文件名同时包含平台与 ROM CRC，不会把另一份卡带的状态误加载。
 
 ## 4. 公共显示内存
 

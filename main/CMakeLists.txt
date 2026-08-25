@@ -1,7 +1,8 @@
 # 注意：一旦给 main 显式写了 REQUIRES，它就不再自动依赖全部组件了，
 # 所以 display.c / nes_emu.c 用到的驱动都得在这里列全。
 idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
-                            "gbc_emu.c" "snes_emu.c" "snes_save.c" "genesis_emu.c"
+                            "gbc_emu.c" "snes_emu.c" "genesis_emu.c"
+                            "game_menu.c"
                             "rgb_led.c" "audio_output.c"
                             "input_serial.c" "input_gamepad.c" "input_usb.c"
                             "rom_store.c" "rom_zip.c" "rom_menu.c" "loading_screen.c"
@@ -23,7 +24,7 @@ idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                                 nvs_flash       # 单词学习进度，答对/错后跨重启保留
                                 esp_rom        # ZIP DEFLATE 使用 ESP32-S3 ROM 内置 miniz
                                 esp_hw_support # ROM CRC 与存档文件 CRC
-                                fatfs          # TF 卡 + SMW 即时存档（后者底层自动带 wear levelling）
+                                fatfs          # TF 卡 ROM、目录缓存和四槽即时存档
                                 spi_flash      # 提供 esp_flash.h
                                 sdmmc          # TF 卡：sdmmc_cmd.h / 卡信息打印
                                 esp_driver_sdspi # TF 卡走 SPI3

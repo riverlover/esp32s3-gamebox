@@ -2,7 +2,7 @@
  * WORDS 离线英式发音包。
  *
  * 524 个不重复词条按 FNV-1a 哈希排序，板上只留约 8.2 KB 索引；PCM 用
- * 4-bit IMA ADPCM 保存到独立 13 MB data 分区，播放时每次从 flash 读 256
+ * 4-bit IMA ADPCM 保存到独立 13.94 MiB data 分区，播放时每次从 flash 读 256
  * 字节、解成 20 ms 立体声包送公共 I2S。既不占 app 分区，也不把整段语音
  * 搬进 RAM。生成格式的另一半在 tools/build_word_audio.py。
  */

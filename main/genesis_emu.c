@@ -8,8 +8,10 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -34,12 +36,14 @@
 
 #include "audio_output.h"
 #include "display.h"
+#include "game_menu.h"
 #include "genesis_emu.h"
 #include "input_gamepad.h"
 #include "input_serial.h"
 #include "input_usb.h"
 #include "nes_emu.h"
 #include "rgb_led.h"
+#include "esp_crc.h"
 
 static const char *TAG = "genesis";
 
@@ -49,12 +53,9 @@ static const char *TAG = "genesis";
 #define GEN_AUDIO_BUF_LEN  GWENESIS_AUDIO_BUFFER_LENGTH_PAL
 #define GEN_FRAME_SKIP     3u
 
-/* 退出到 ROM 菜单：SELECT+START 长按 1 秒触发 esp_restart()。真实 Genesis
- * 手柄没有 SELECT，这个位在本项目里只由 Shield 小键产生，update_input()
- * 也没转发它，纯粹是系统层的组合键。没有卡带电池 SRAM 落盘，软重启不丢
- * 数据（gwenesis_savestate.h 引入了但这个文件从没调用过它）。 */
-#define EXIT_COMBO_BITS    (GAMEPAD_BIT_SELECT | GAMEPAD_BIT_START)
-#define EXIT_HOLD_US       1000000
+/* 真实 Genesis 手柄没有 SELECT/X，这两位只由宿主产生；组合键不会占用
+ * Genesis 原机按键。 */
+#define MENU_COMBO_BITS    (GAMEPAD_BIT_SELECT | GAMEPAD_BIT_X)
 
 _Static_assert(GEN_SOURCE_W <= DISP_W && GEN_VISIBLE_H <= DISP_H,
                "Genesis 原生画布必须能装进面板");
@@ -92,6 +93,13 @@ typedef struct {
 static genesis_frame_t s_frames[2];
 static int s_frame_index;
 static rom_store_image_t s_rom;
+static FILE *s_savestate_fp;
+static int s_savestate_errors;
+
+typedef struct {
+    char key[28];
+    uint32_t length;
+} genesis_state_var_t;
 
 static inline int16_t clamp16(int value)
 {
@@ -271,26 +279,114 @@ static void run_frame(bool render)
     m68k.cycles -= system_clock;
 }
 
-/* 当前测试版本不接即时存档，但保留核心需要的宿主符号。 */
-SaveState *saveGwenesisStateOpenForRead(const char *name) { (void)name; return (SaveState *)1; }
-SaveState *saveGwenesisStateOpenForWrite(const char *name) { (void)name; return (SaveState *)1; }
+/* Gwenesis 核心把状态拆成带名字的小字段，文件封装照 retro-go 的宿主格式。
+ * OpenForRead/Write 的 name 是逻辑分组名，实际所有分组顺序写进同一个槽文件。 */
+SaveState *saveGwenesisStateOpenForRead(const char *name)
+{
+    (void)name;
+    return s_savestate_fp ? (SaveState *)1 : NULL;
+}
+
+SaveState *saveGwenesisStateOpenForWrite(const char *name)
+{
+    (void)name;
+    return s_savestate_fp ? (SaveState *)1 : NULL;
+}
+
 int saveGwenesisStateGet(SaveState *state, const char *tag)
 {
-    (void)state; (void)tag; return 0;
+    int value = 0;
+    saveGwenesisStateGetBuffer(state, tag, &value, sizeof(value));
+    return value;
 }
 void saveGwenesisStateSet(SaveState *state, const char *tag, int value)
 {
-    (void)state; (void)tag; (void)value;
+    saveGwenesisStateSetBuffer(state, tag, &value, sizeof(value));
 }
 void saveGwenesisStateGetBuffer(SaveState *state, const char *tag, void *buffer, int length)
 {
-    (void)state; (void)tag; memset(buffer, 0, length);
+    (void)state;
+    if (!s_savestate_fp || !buffer || length < 0) {
+        s_savestate_errors++;
+        return;
+    }
+
+    long initial = ftell(s_savestate_fp);
+    bool from_start = false;
+    genesis_state_var_t var;
+    while (!from_start || ftell(s_savestate_fp) < initial) {
+        if (fread(&var, sizeof(var), 1, s_savestate_fp) != 1) {
+            if (!from_start) {
+                clearerr(s_savestate_fp);
+                fseek(s_savestate_fp, 0, SEEK_SET);
+                from_start = true;
+                continue;
+            }
+            break;
+        }
+        if (strncmp(var.key, tag, sizeof(var.key)) == 0) {
+            size_t take = var.length < (uint32_t)length ? var.length : (uint32_t)length;
+            if (fread(buffer, 1, take, s_savestate_fp) != take) {
+                s_savestate_errors++;
+            }
+            if (var.length > take) fseek(s_savestate_fp, var.length - take, SEEK_CUR);
+            return;
+        }
+        if (fseek(s_savestate_fp, var.length, SEEK_CUR) != 0) break;
+    }
+    ESP_LOGW(TAG, "Genesis 存档字段缺失：%s", tag);
+    s_savestate_errors++;
 }
 void saveGwenesisStateSetBuffer(SaveState *state, const char *tag, void *buffer, int length)
 {
-    (void)state; (void)tag; (void)buffer; (void)length;
+    (void)state;
+    if (!s_savestate_fp || !buffer || length < 0) {
+        s_savestate_errors++;
+        return;
+    }
+    genesis_state_var_t var = {{0}, (uint32_t)length};
+    strncpy(var.key, tag, sizeof(var.key) - 1);
+    if (fwrite(&var, sizeof(var), 1, s_savestate_fp) != 1 ||
+        fwrite(buffer, 1, length, s_savestate_fp) != (size_t)length) {
+        s_savestate_errors++;
+    }
 }
 void gwenesis_io_get_buttons(void) {}
+
+static bool genesis_state_save_file(const char *path, void *ctx)
+{
+    (void)ctx;
+    s_savestate_fp = fopen(path, "wb");
+    if (!s_savestate_fp) return false;
+    s_savestate_errors = 0;
+    gwenesis_save_state();
+    bool ok = s_savestate_errors == 0 && fflush(s_savestate_fp) == 0 &&
+              fsync(fileno(s_savestate_fp)) == 0;
+    fclose(s_savestate_fp);
+    s_savestate_fp = NULL;
+    return ok;
+}
+
+static bool genesis_state_load_file(const char *path, void *ctx)
+{
+    (void)ctx;
+    s_savestate_fp = fopen(path, "rb");
+    if (!s_savestate_fp) return false;
+    s_savestate_errors = 0;
+    gwenesis_load_state();
+    fclose(s_savestate_fp);
+    s_savestate_fp = NULL;
+    bool ok = s_savestate_errors == 0;
+    if (!ok) reset_emulation();
+    return ok;
+}
+
+static void genesis_state_reset(bool hard, void *ctx)
+{
+    (void)hard;
+    (void)ctx;
+    reset_emulation();
+}
 
 esp_err_t genesis_emu_run(const rom_store_entry_t *entry)
 {
@@ -300,6 +396,7 @@ esp_err_t genesis_emu_run(const rom_store_entry_t *entry)
     esp_err_t err = rom_store_load(entry, 1, &s_rom);
     if (err != ESP_OK) return err;
     if (!allocate_runtime()) return ESP_ERR_NO_MEM;
+    uint32_t rom_crc = esp_crc32_le(0, s_rom.data, s_rom.size);
 
     load_cartridge(s_rom.data, s_rom.size);
     power_on();
@@ -319,6 +416,14 @@ esp_err_t genesis_emu_run(const rom_store_entry_t *entry)
     input_gamepad_init();
     rgb_led_init();
 
+    const game_menu_config_t menu = {
+        .system = "md",
+        .rom_crc = rom_crc,
+        .save_state = genesis_state_save_file,
+        .load_state = genesis_state_load_file,
+        .reset = genesis_state_reset,
+    };
+
     ESP_LOGI(TAG,
              "retro-go Gwenesis 启动：%s，%s，单核，显示每 %u 帧取 1 帧，音频 %u Hz",
              entry->name, pal ? "PAL 50Hz" : "NTSC 60Hz",
@@ -334,24 +439,22 @@ esp_err_t genesis_emu_run(const rom_store_entry_t *entry)
     int64_t emu_total = 0;
     uint16_t previous_keys = UINT16_MAX;
     uint32_t previous_hash = 0;
-    int64_t exit_hold_t0 = 0;
 
     while (1) {
         int64_t begin = esp_timer_get_time();
         uint16_t keys = input_serial_poll() | input_gamepad_poll() | input_usb_poll();
 
-        bool exit_combo = (keys & EXIT_COMBO_BITS) == EXIT_COMBO_BITS;
-        if (exit_combo) {
-            /* 组合键属于系统，不让 update_input() 看到 SELECT/START。 */
-            keys &= ~EXIT_COMBO_BITS;
-            int64_t now = esp_timer_get_time();
-            if (exit_hold_t0 == 0) exit_hold_t0 = now;
-            if (now - exit_hold_t0 >= EXIT_HOLD_US) {
+        if ((keys & MENU_COMBO_BITS) == MENU_COMBO_BITS) {
+            update_input(0);
+            if (game_menu_open(&menu) == GAME_MENU_RESTART) {
                 rgb_led_off();
                 esp_restart();
             }
-        } else {
-            exit_hold_t0 = 0;
+            previous_keys = UINT16_MAX;
+            frames = presented = changed = 0;
+            emu_total = 0;
+            deadline = stat_at = esp_timer_get_time();
+            continue;
         }
 
         if (keys != previous_keys) {

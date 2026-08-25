@@ -34,12 +34,10 @@ ESP32-S3-DevKitC-1 兼容板（N16R8）+ ST7789 SPI 屏（240×320，横屏 320�
       可玩帧率**：SMW 45/60 fps、Mario Kart 50/60 fps，大量热数据和渲染中间结果
       塞不进约 179 KB 的可用内部 SRAM。另外 Super FX / SA-1 / S-DD1 没有实现，
       这类卡带会黑屏。详见 [`components/snes9x/README.gamebox.md`](components/snes9x/README.gamebox.md)
-- [x] SMW 即时存档：SELECT + 右方大键（丝印 B，代码里的 SNES A）长按 1 秒存，
-      SELECT + 上方大键（丝印 A，SNES X）长按 1 秒读，
-      RST 后启动同一 ROM 自动恢复；960 KiB FAT + wear levelling，双槽交替写
-      和 CRC 防断电损坏
-- [x] 全局退出键：任意模拟器里 SELECT + START 长按 1 秒，`esp_restart()`
-      软重启回到 ROM 选单。没有模拟器落盘卡带电池 SRAM，重启不丢数据
+- [x] retro-go 风格四槽即时存档：NES、GB/GBC、SNES、Genesis 游戏中同时按
+      SELECT + X 打开统一菜单，可 Save & Continue、Save & Quit、Load game、
+      软/硬 Reset 或 Quit；状态按平台和 ROM CRC 写入 TF 卡，临时文件 + 备份改名
+      避免写卡中断直接覆盖唯一好档
 - [x] 苏州小学译林版单词学习：三至六年级按上/下册选择；三上按教材 Word lists
       完整收录 127 项（包含带 * 的非核心词），其余分册暂为每单元 8 个核心词；
       可选单元进行认读和测验，每册用独立 NVS 键保存掌握进度
@@ -305,27 +303,19 @@ JoyStick Shield，接线见「接线」一节。飞线手柄、USB 手柄、串�
 | 右侧小键 | E | START | START |
 | 摇杆 | — | 上下左右 | 上下左右 |
 
-SNES 的 Super Mario World 里，同时长按小按键 F（SELECT）和右方大键（丝印 B，代码里
-映射成 `GAMEPAD_BIT_A`）1 秒会冻结画面并显示 `SAVING...`，看到 `SAVE OK` 后即可安全
-按 RST。下次重新选择同一份 SMW ROM 会自动回到保存瞬间。存档与 ROM CRC 绑定，不会
-加载到同名改版或其他区域版本；目前只有 SMW 启用此功能，其他游戏不会占用这份全局
-即时存档。需要恢复双槽中的上一份时，在菜单进入 SMW 时按住上方大键 X，再按 A 或
-START 确认；上一份不存在或损坏时仍会退回最新一份，不会清空或覆盖任何存档。想从头
-开始时，按住左方大键 Y，再按 A 或 START 进入 SMW，确认后即可松开；本次会跳过自动
-恢复，但仍保留原来的两份存档。确认新进度后再次长按 SELECT + 右方大键保存，新状态
-就会成为下次自动恢复的最新存档。
+**游戏内菜单 / 即时存档**：不分平台，游戏中同时按小按键 F（SELECT）和上方大键 A（X）
+即可打开菜单，不需要长按。摇杆上下选择，A 确认，B 返回游戏或上一级：
 
-**游戏内读档**：同时长按小按键 F（SELECT）和上方大键（丝印 A，代码里映射成
-`GAMEPAD_BIT_X`）1 秒，显示 `LOADING...`，成功后原地回到最新那份存档的位置，
-**不用退回菜单再选一遍游戏**。和存档完全对称。选 X 是为了和启动时「按住 X 恢复
-上一份」呼应——X 这颗键在这台机器上统一是「读档相关」。没有可用存档时显示
-`NO SAVE`，游戏原样继续。
+- `SAVE & CONTINUE`：选择 SLOT 0～3，保存后继续游戏；
+- `SAVE & QUIT`：存档成功后软重启回开机选单，失败则留在菜单；
+- `LOAD GAME`：从四个槽中恢复，空槽会标成 `EMPTY`；
+- `RESET`：再选软重置或硬重置；
+- `QUIT`：不保存，软重启回开机选单。
 
-**退出到 ROM 选单**：不分平台，游戏中同时长按小按键 F（SELECT）和 E（START）1 秒
-会显示退出提示（SNES/GB/GBC 有画面提示，NES/Genesis 直接重启）并触发 `esp_restart()`
-软重启，回到开机选单重新选游戏。这是系统级组合键，长按期间该组合不会传给正在跑的
-游戏；没有任何模拟器把卡带电池 SRAM 落盘，所以重启不会丢失除上面这份 SMW 即时存档
-之外的东西——本来也没有其它能被丢的存档。
+槽文件放在 `/gamebox/saves/{nes,gb,gbc,snes,md}/<ROM CRC>.sav0`～`.sav3`。
+同名改版、不同区域版或重命名后的同一 ROM 都按内容 CRC 区分/识别。保存先完整写 `.tmp`，
+再用 `.bak` 保护旧档后改名提交；若上次恰好在改名中间断电，读档会回退 `.bak`。
+GB/GBC 和 NES 的核心快照也包含卡带 SRAM，因此 Pokemon 等游戏内电池进度会随槽一起保存。
 
 上电时**手别碰摇杆**：开机要采 16 次静止读数做中位校准，碰着会被判定为
 「没接好」而整路禁用（按键不受影响）。
@@ -341,18 +331,18 @@ idf.py -p /dev/cu.usbserial-A5069RR4 monitor
 
 **焦点要在 monitor 窗口里**，然后：
 
-（`U`/`I` 是给 SNES 补的两颗面键。低 8 位和 NES 手柄一致，NES/GB/GBC 会忽略这两位；
-补上它们之后串口这条调试后路才够得到 SNES 的全部控制，包括 SELECT+X 读档。）
+（`U`/`I` 是给 SNES 补的两颗面键。低 8 位和 NES 手柄一致，NES/GB/GBC 会忽略这两位。）
 
 | 键 | 作用 |
 |---|---|
 | `W` `A` `S` `D` 或方向键 | 上下左右 |
 | `K` 或 `Z` | A（跳） |
 | `J` 或 `X` | 选单：返回上一级；游戏：B（跑 / 发射） |
-| `U` | 游戏：SNES X（读档修饰键） |
+| `U` | 游戏：SNES X |
 | `I` | SNES Y |
 | 回车 | START |
 | Tab | SELECT |
+| `Tab` + `U` | 打开游戏内菜单（SELECT + X） |
 | 空格 | 全部松开（按键卡住时用） |
 | `Ctrl+]` | 退出 monitor |
 

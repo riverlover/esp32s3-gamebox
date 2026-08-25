@@ -5,7 +5,7 @@ project(esp32s3-gamebox)
 
 # ---- WORDS 英式发音包 ----
 #
-# 游戏已经全部改从 TF 卡装载，原来给 flash ROM 库预留的 13 MB 分区改给单词
+# 游戏已经全部改从 TF 卡装载，原来给 flash ROM 库预留的约 14 MB 分区改给单词
 # 发音。生成器用 macOS 的 Daniel（en_GB）逐词合成，再压成 24 kHz IMA ADPCM。
 # 格式和板上解码器分别见 tools/build_word_audio.py / main/word_audio.c。
 #

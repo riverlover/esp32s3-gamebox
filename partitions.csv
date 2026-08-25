@@ -1,8 +1,8 @@
 # ESP32-S3-WROOM-1-N16R8：16 MB flash
 #
 # Genesis 再加入一个完整 CPU / VDP / 双声音芯片核心后，1 MB app 已不可能容纳，
-# 所以 app 扩到 2 MB。尾部的 SNES 存档分区保持原地址，已有存档不会被搬动；
-# 相应地 data 起点后移 1 MB、容量从 14 MB 缩到 13 MB。
+# 所以 app 扩到 2 MB。即时存档现在统一放 TF 卡，原来尾部给 SMW 单独预留的
+# 960 KiB 也并回 word_audio；Flash 不再保留任何游戏专用存档分区。
 #
 # 游戏已全部从 TF 卡加载，这块 data 分区改放 WORDS 的离线英式发音包。
 # 里面不是文件系统，是 tools/build_word_audio.py 生成的定长索引 + IMA ADPCM；
@@ -11,13 +11,10 @@
 # 子类型 0x40 是「自定义 data」，故意不用 spiffs/littlefs：那些子类型会让
 # 工具链以为该跑文件系统检查。0x40 落在 IDF 给应用自定义留的范围里。
 #
-# flash-word-audio 写的是镜像实际字节数，不会因为分区预留 13 MB 而增加烧录时间。
+# flash-word-audio 写的是镜像实际字节数，不会因为分区预留 13.94 MiB 而增加烧录时间。
 #
-# word_audio 止于 0xF10000；尾部 960 KB 全部给 SMW 即时存档。FAT 让 Snes9x 现成的
-# stdio 快照接口可以直接使用，wear levelling 避免每次都擦写同一组物理扇区。
 # Name,     Type, SubType, Offset,   Size
 nvs,        data, nvs,     0x9000,   0x6000
 phy_init,   data, phy,     0xf000,   0x1000
 factory,    app,  factory, 0x10000,  0x200000
-word_audio, data, 0x40,    0x210000, 0xD00000
-snes_save,  data, fat,     0xF10000, 0x0F0000
+word_audio, data, 0x40,    0x210000, 0xDF0000
