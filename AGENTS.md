@@ -56,7 +56,7 @@ idf.py flash-word-audio                                   # 只在教材词表/�
 
 开机画面（`main.c`）现在会停下来问 GAME/WORDS/SETTINGS：WORDS 进入苏州小学译林版
 三至六年级上/下册选择，再选择 Unit 1～8；每册进度按教材版本独立保存；SETTINGS
-沿用 retro-go Options 的单列交互，配色统一使用主页的四阶 Game Boy 绿色，可调音量
+沿用 retro-go Options 的单列交互；游戏以外的界面统一走 gruvbox light，可调音量
 和背光；音量使用以 50% 为锚点的听感曲线，每次调整立即播放 `hello` 试听；也可进入
 摇杆位置 + 两路原始 ADC
 值的 Controller Test（`input_gamepad_show()`）。
@@ -164,6 +164,26 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
 - 所有失败都只让 `rom_store_init()` 返回 0、不 abort：没插卡、卡挂不上、卡上没有
   合法 ROM，都回退到 `nes_emu.c` 里 `ROM_CHOICE` 选的编译期嵌入 ROM。
   ⚠️ 目前**没卡时屏幕上没有任何提示**，直接进内置游戏，看起来像坏了。
+
+### 非游戏 UI 的配色
+
+游戏以外的所有界面（开机画面、模式选择、ROM 菜单、加载页、SETTINGS、
+单词学习、Controller Test）只从 `main/display.h` 取色，那里是**唯一入口**，
+分两层：
+
+- **原色层 `C_GVB_*`** —— [gruvbox](https://github.com/morhetz/gruvbox) light
+  主题的完整调色板，名字和上游 palette 一一对应。gruvbox 的 `faded_*` 和
+  `neutral_*` 不是深浅备选，是给两个主题用的：light 主题取 `faded_*`。
+- **语义层 `C_UI_*` / `C_SYS_*`** —— 面（BG/PANEL/PANEL_ALT/LINE/EDGE）、
+  字（FG/FG_DIM/FG_FAINT/FG_INV/FG_INV_DIM）、选中态（SEL/SEL_EDGE）、
+  状态（OK/BAD/WARN/INFO/GOLD/BAR）、五个平台各自的色相（`C_SYS_NES` 等，
+  splash 的平台标签和 rom_menu 平台卡片的色条共用）。
+
+⚠ **画界面只用语义层**，别直接摸 `C_GVB_*`，更不要自己 `RGB565()` 一个新色。
+以前 `main.c` / `rom_menu.c` 各抄了一份配色约定注释、`word_study.c` 又自己
+`#define` 了三个色，就是没有这层的结果。`C_RED`/`C_GREEN` 那组原色只留给
+`SHOW_DISPLAY_SELFTEST` 诊断图和 `gbc_emu.c` 的存档提示——那两处要的是
+「一眼认出通道对不对」，不该跟着主题走。
 
 ### 输入
 

@@ -35,10 +35,6 @@ static const char *TAG = "words";
 #define PROGRESS_MAGIC    0x574F5244u  /* "WORD" */
 #define PROGRESS_VERSION  3
 
-#define C_OK   RGB565(42, 116, 54)
-#define C_BAD  RGB565(174, 62, 48)
-#define C_GOLD RGB565(238, 174, 36)
-
 typedef struct {
     uint32_t magic;
     uint16_t version;
@@ -152,15 +148,15 @@ static void draw_study_word(const char *s, int center_y, int maximum_scale)
     int y = center_y - 8 * scale;
     int shadow = scale > 1 ? 2 : 1;
 
-    /* 浅色阴影把深色主字从 DMG 绿背景里托起来，但仍保持像素掌机风格。 */
-    display_text_ascii_16_scaled(x + shadow, y + shadow, s, C_GB1, scale);
-    display_text_ascii_16_scaled(x, y, s, C_GB3, scale);
+    /* 浅色阴影把深色主字从底色里托起来，但仍保持像素掌机风格。 */
+    display_text_ascii_16_scaled(x + shadow, y + shadow, s, C_UI_PANEL_ALT, scale);
+    display_text_ascii_16_scaled(x, y, s, C_UI_FG, scale);
 }
 
 static void draw_frame(void)
 {
-    display_clear(C_GB0);
-    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_GB2);
+    display_clear(C_UI_BG);
+    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_UI_EDGE);
 }
 
 static void unit_word_range(const study_deck_t *deck, int unit,
@@ -220,9 +216,10 @@ static void draw_segment_bar(const study_session_t *session, int current,
     for (int i = 0; i < count; i++) {
         uint16_t color;
         if (show_quiz_results && session->quiz_result[i] >= 0) {
-            color = session->quiz_result[i] ? C_OK : C_BAD;
+            color = session->quiz_result[i] ? C_UI_OK : C_UI_BAD;
         } else {
-            color = i < current ? C_GOLD : (i == current ? C_GB3 : C_GB1);
+            color = i < current ? C_UI_GOLD
+                                : (i == current ? C_UI_FG : C_UI_LINE);
         }
         display_fill_rect(x0 + i * (width + gap), y, width, height, color);
     }
@@ -230,36 +227,36 @@ static void draw_segment_bar(const study_session_t *session, int current,
 
 static void draw_card_header(const view_t *view, const char *title)
 {
-    text_center_latin_16(7, title, C_GB3, 1);
+    text_center_latin_16(7, title, C_UI_FG, 1);
     /* 最多 31 格（完整三上 Unit 7），按单元词数自动压缩，仍保留逐题红绿反馈。 */
     draw_segment_bar(view->session, view->pos, view->kind == VIEW_QUIZ, 31, 4);
-    display_hline(18, 42, DISP_FB_W - 36, C_GB2);
+    display_hline(18, 42, DISP_FB_W - 36, C_UI_LINE);
 }
 
 static void draw_select(const view_t *view)
 {
     char line[40];
     draw_frame();
-    text_center_latin_16(10, "YILIN ENGLISH", C_GB3, 1);
-    text_center_16(37, "苏州小学 选择教材", C_GB2);
+    text_center_latin_16(10, "YILIN ENGLISH", C_UI_FG, 1);
+    text_center_16(37, "苏州小学 选择教材", C_UI_FG_DIM);
 
     for (int i = 0; i < STUDY_DECK_COUNT; i++) {
         int col = i & 1;
         int row = i / 2;
         int x = col ? 147 : 13;
         int y = 63 + row * 31;
-        uint16_t fill = i == view->selected ? C_GB2 : C_GB0;
-        uint16_t text = i == view->selected ? C_GB0 : C_GB3;
-        display_fill_rect(x, y, 128, 25, fill);
-        display_rect(x, y, 128, 25, C_GB2);
+        bool active = i == view->selected;
+        display_fill_rect(x, y, 128, 25, active ? C_UI_SEL : C_UI_PANEL);
+        display_rect(x, y, 128, 25, active ? C_UI_SEL_EDGE : C_UI_EDGE);
+        uint16_t text = active ? C_UI_FG_INV : C_UI_FG;
         snprintf(line, sizeof(line), "%d年级 %s册", STUDY_DECKS[i].grade,
                  STUDY_DECKS[i].upper ? "上" : "下");
         text_center_16_box(x, 128, y + 5, line, text);
     }
 
     snprintf(line, sizeof(line), "当前: %s", STUDY_DECKS[view->selected].revision);
-    text_center_16(190, line, C_GB2);
-    text_center_16(207, "方向选择  A确认  B返回", C_GB3);
+    text_center_16(190, line, C_UI_FG_DIM);
+    text_center_16(207, "方向选择  A确认  B返回", C_UI_FG_FAINT);
 }
 
 static void draw_unit_select(const view_t *view)
@@ -268,18 +265,18 @@ static void draw_unit_select(const view_t *view)
     draw_frame();
     snprintf(line, sizeof(line), "%d年级%s册  选择单元", view->deck->grade,
              view->deck->upper ? "上" : "下");
-    text_center_16(12, line, C_GB3);
-    text_center_16(36, view->deck->revision, C_GB2);
+    text_center_16(12, line, C_UI_FG);
+    text_center_16(36, view->deck->revision, C_UI_FG_DIM);
 
     for (int i = 0; i < STUDY_UNIT_COUNT; i++) {
         int col = i & 1;
         int row = i / 2;
         int x = col ? 147 : 13;
         int y = 58 + row * 31;
-        uint16_t fill = i == view->selected ? C_GB2 : C_GB0;
-        uint16_t text = i == view->selected ? C_GB0 : C_GB3;
-        display_fill_rect(x, y, 128, 25, fill);
-        display_rect(x, y, 128, 25, C_GB2);
+        bool active = i == view->selected;
+        display_fill_rect(x, y, 128, 25, active ? C_UI_SEL : C_UI_PANEL);
+        display_rect(x, y, 128, 25, active ? C_UI_SEL_EDGE : C_UI_EDGE);
+        uint16_t text = active ? C_UI_FG_INV : C_UI_FG;
         snprintf(line, sizeof(line), "U%d %s", i + 1, view->deck->unit_titles[i]);
         text_center_16_box(x, 128, y + 5, line, text);
     }
@@ -289,8 +286,8 @@ static void draw_unit_select(const view_t *view)
     int mastered = count_unit_level(view->progress, view->deck, view->selected, 3);
     snprintf(line, sizeof(line), "本单元 已学%d/%d  掌握%d/%d",
              learned, unit_count, mastered, unit_count);
-    text_center_16(186, line, C_GB2);
-    text_center_16(207, "方向选择  A确认  B返回", C_GB3);
+    text_center_16(186, line, C_UI_FG_DIM);
+    text_center_16(207, "方向选择  A确认  B返回", C_UI_FG_FAINT);
 }
 
 static void draw_home(const view_t *view)
@@ -304,23 +301,23 @@ static void draw_home(const view_t *view)
     draw_study_word("WORD QUEST", 26, 2);
     snprintf(line, sizeof(line), "%d年级 %s册  %s", view->deck->grade,
              view->deck->upper ? "上" : "下", view->deck->revision);
-    text_center_16(50, line, C_GB2);
-    display_hline(38, 82, DISP_FB_W - 76, C_GB2);
+    text_center_16(50, line, C_UI_FG_DIM);
+    display_hline(38, 82, DISP_FB_W - 76, C_UI_LINE);
     snprintf(line, sizeof(line), "Unit %d  %s", view->unit + 1,
              view->deck->unit_titles[view->unit]);
-    text_center_16(92, line, C_GB3);
+    text_center_16(92, line, C_UI_FG);
 
     snprintf(line, sizeof(line), "已学习 %d/%d   已掌握 %d/%d",
              learned, unit_count, mastered, unit_count);
-    text_center_16(124, line, C_GB2);
+    text_center_16(124, line, C_UI_INFO);
     snprintf(line, sizeof(line), "本轮学习本单元全部%d项", unit_count);
-    text_center_16(149, line, C_GB2);
+    text_center_16(149, line, C_UI_FG_DIM);
     if (!view->audio_ok) {
-        text_center_16(176, "英式发音包未安装 学习仍可继续", C_BAD);
+        text_center_16(176, "英式发音包未安装 学习仍可继续", C_UI_WARN);
     } else if (!view->storage_ok) {
-        text_center_16(176, "进度仅在本次开机有效", C_BAD);
+        text_center_16(176, "进度仅在本次开机有效", C_UI_WARN);
     }
-    text_center_16(199, "A 开始   B 换单元", C_GB3);
+    text_center_16(199, "A 开始   B 换单元", C_UI_FG_FAINT);
 }
 
 static void draw_card(const view_t *view)
@@ -333,20 +330,20 @@ static void draw_card(const view_t *view)
     draw_card_header(view, "LEARN");
     snprintf(line, sizeof(line), "Unit %d  %s", word->unit + 1,
              view->deck->unit_titles[word->unit]);
-    text_center_16(50, line, C_GB2);
+    text_center_16(50, line, C_UI_FG_DIM);
     draw_study_word(word->word, 94, 3);
 
     if (view->kind == VIEW_CARD_FRONT) {
-        text_center_16(132, "先猜一猜它的意思", C_GB2);
-        text_center_16(160, "想好后按 A 翻开", C_GB3);
+        text_center_16(132, "先猜一猜它的意思", C_UI_FG_DIM);
+        text_center_16(160, "想好后按 A 翻开", C_UI_FG);
         text_center_16(199, view->audio_ok ? "A 翻开  X 发音  SELECT 返回"
-                                           : "A 翻开   SELECT 返回", C_GB3);
+                                           : "A 翻开   SELECT 返回", C_UI_FG_FAINT);
     } else {
         snprintf(line, sizeof(line), "意思: %s", word->meaning);
-        text_center_16(124, line, C_GB3);
-        text_center_16(153, "看英文说中文 再大声读3遍", C_GB2);
+        text_center_16(124, line, C_UI_FG);
+        text_center_16(153, "看英文说中文 再大声读3遍", C_UI_FG_DIM);
         text_center_16(199, view->audio_ok ? "A 下一张  B 再想  X 发音"
-                                           : "A 下一张   B 再想想", C_GB3);
+                                           : "A 下一张   B 再想想", C_UI_FG_FAINT);
     }
 }
 
@@ -359,24 +356,28 @@ static void draw_quiz(const view_t *view)
     draw_frame();
     draw_card_header(view, "QUIZ");
     draw_study_word(word->word, 61, 2);
-    text_center_16(80, "选出正确的中文意思", C_GB2);
+    text_center_16(80, "选出正确的中文意思", C_UI_FG_DIM);
 
     for (int i = 0; i < 3; i++) {
         int y = 103 + i * 29;
-        uint16_t fill = C_GB0;
-        uint16_t text = C_GB3;
+        uint16_t fill = C_UI_PANEL;
+        uint16_t edge = C_UI_EDGE;
+        uint16_t text = C_UI_FG;
         if (view->answered >= 0 && i == view->correct_slot) {
-            fill = C_OK;
-            text = C_WHITE;
+            fill = C_UI_OK;
+            edge = C_UI_SEL_EDGE;
+            text = C_UI_FG_INV;
         } else if (view->answered == 0 && i == view->selected) {
-            fill = C_BAD;
-            text = C_WHITE;
+            fill = C_UI_BAD;
+            edge = C_UI_SEL_EDGE;
+            text = C_UI_FG_INV;
         } else if (view->answered < 0 && i == view->selected) {
-            fill = C_GB2;
-            text = C_GB0;
+            fill = C_UI_SEL;
+            edge = C_UI_SEL_EDGE;
+            text = C_UI_FG_INV;
         }
         display_fill_rect(33, y - 4, DISP_FB_W - 66, 24, fill);
-        display_rect(33, y - 4, DISP_FB_W - 66, 24, C_GB2);
+        display_rect(33, y - 4, DISP_FB_W - 66, 24, edge);
         /* 用 1/2/3 而不是 A/B/C 标选项：实体手柄也有 A/B/C 丝印，写字母
          * 会误导孩子去按对应面键；这里始终是摇杆上下移动、A 确认。 */
         snprintf(line, sizeof(line), "%d  %s", i + 1,
@@ -386,11 +387,11 @@ static void draw_quiz(const view_t *view)
 
     if (view->answered < 0) {
         text_center_16(199, view->audio_ok ? "上下选择  A 确认  X 发音"
-                                           : "上下选择   A 确认", C_GB3);
+                                           : "上下选择   A 确认", C_UI_FG_FAINT);
     } else if (view->answered) {
-        text_center_16(199, "答对了!   A 继续", C_OK);
+        text_center_16(199, "答对了!   A 继续", C_UI_OK);
     } else {
-        text_center_16(199, "记住绿色答案   A 继续", C_BAD);
+        text_center_16(199, "记住绿色答案   A 继续", C_UI_BAD);
     }
 }
 
@@ -402,22 +403,22 @@ static void draw_result(const view_t *view)
     bool strong_score = view->score * 4 >= count * 3;
 
     draw_frame();
-    text_center_latin_16(15, "ROUND COMPLETE", C_GB3, 1);
-    text_center_16(52, "本轮得分", C_GB2);
+    text_center_latin_16(15, "ROUND COMPLETE", C_UI_FG, 1);
+    text_center_16(52, "本轮得分", C_UI_FG_DIM);
     snprintf(line, sizeof(line), "%d / %d", view->score, count);
-    text_center_ascii(76, line, strong_score ? C_OK : C_GB3, 4);
+    text_center_ascii(76, line, strong_score ? C_UI_OK : C_UI_FG, 4);
 
     draw_segment_bar(view->session, count, true, 118, 8);
     if (view->score == count) {
-        text_center_16(139, "太棒了 全部答对!", C_OK);
+        text_center_16(139, "太棒了 全部答对!", C_UI_OK);
     } else if (strong_score) {
-        text_center_16(139, "很好 错词下轮会再来", C_GB3);
+        text_center_16(139, "很好 错词下轮会再来", C_UI_FG);
     } else {
-        text_center_16(139, "慢慢来 记牢比求快重要", C_GB3);
+        text_center_16(139, "慢慢来 记牢比求快重要", C_UI_FG);
     }
     snprintf(line, sizeof(line), "本单元已掌握 %d/%d", mastered, count);
-    text_center_16(169, line, C_GB2);
-    text_center_16(199, "A 再来一轮   B 返回", C_GB3);
+    text_center_16(169, line, C_UI_INFO);
+    text_center_16(199, "A 再来一轮   B 返回", C_UI_FG_FAINT);
 }
 
 static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)

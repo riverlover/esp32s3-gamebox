@@ -200,7 +200,7 @@ typedef struct {
 
 static int draw_key_status(int x, int y, const char *name, bool pressed)
 {
-    display_text(x, y, name, pressed ? C_GREEN : C_GRAY, 1);
+    display_text(x, y, name, pressed ? C_UI_OK : C_UI_FG_DIM, 1);
     return x + (int)strlen(name) * 6 + 8;
 }
 
@@ -209,21 +209,25 @@ static void viz_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
     const viz_t *v = ctx;
 
-    display_clear(C_BLACK);
-    display_rect(v->bx, v->by, v->box, v->box, C_GRAY);
-    display_hline(v->bx, v->vc, v->box, C_GRAY);
-    display_vline(v->hc, v->by, v->box, C_GRAY);
-    display_fill_rect(v->px - 3, v->py - 3, 7, 7, C_GREEN);
+    /* 这页从 SETTINGS 进得来，所以跟着 display.h 的语义层走，不再是黑底
+     * 彩字。方框铺 C_UI_PANEL 把摇杆范围从页面底色里分出来，十字准星只用
+     * C_UI_LINE：准星是参考线，压过光点反而看不清摇杆偏到哪。 */
+    display_clear(C_UI_BG);
+    display_fill_rect(v->bx, v->by, v->box, v->box, C_UI_PANEL);
+    display_rect(v->bx, v->by, v->box, v->box, C_UI_EDGE);
+    display_hline(v->bx, v->vc, v->box, C_UI_LINE);
+    display_vline(v->hc, v->by, v->box, C_UI_LINE);
+    display_fill_rect(v->px - 3, v->py - 3, 7, 7, C_UI_WARN);
 
     char line[48];
     snprintf(line, sizeof(line), "raw %4d %4d", v->rx, v->ry);
-    display_text(4, v->by + v->box + 3, line, C_WHITE, 1);
+    display_text(4, v->by + v->box + 3, line, C_UI_FG, 1);
     snprintf(line, sizeof(line), "off %+5d %+5d", v->ex, v->ey);
-    display_text(4, v->by + v->box + 12, line, C_GRAY, 1);
+    display_text(4, v->by + v->box + 12, line, C_UI_FG_DIM, 1);
     snprintf(line, sizeof(line), "DIR %c%c%c%c",
              (v->d & NES_PAD_UP)   ? 'U' : '-', (v->d & NES_PAD_DOWN)  ? 'D' : '-',
              (v->d & NES_PAD_LEFT) ? 'L' : '-', (v->d & NES_PAD_RIGHT) ? 'R' : '-');
-    display_text(4, v->by + v->box + 23, line, C_YELLOW, 1);
+    display_text(4, v->by + v->box + 23, line, C_UI_FG, 1);
 
     int x = 4;
     int y = v->by + v->box + 35;
@@ -236,9 +240,9 @@ static void viz_strip(uint16_t *strip, int y0, int h, void *ctx)
     y += 14;
     x = draw_key_status(x, y, "SEL(F)", v->keys & GAMEPAD_BIT_SELECT);
     x = draw_key_status(x, y, "START(E)", v->keys & GAMEPAD_BIT_START);
-    display_text(x + 4, y, "A+B EXIT", C_YELLOW, 1);
+    display_text(x + 4, y, "A+B EXIT", C_UI_WARN, 1);
 
-    display_text(4, y + 14, v->storage, C_CYAN, 1);
+    display_text(4, y + 14, v->storage, C_UI_INFO, 1);
 }
 
 static uint16_t read_buttons(void)

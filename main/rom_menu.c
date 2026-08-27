@@ -109,22 +109,34 @@ static const char *system_name(rom_system_t system)
     return "NES";
 }
 
+/* 平台色见 display.h 的 C_SYS_*。和 system_name() 分成两个函数而不是一张
+ * 结构体表：这两处的 switch 顺序不一样（名字按长度、颜色按平台世代），
+ * 合表反而要多记一层对应关系。 */
+static uint16_t system_color(rom_system_t system)
+{
+    switch (system) {
+    case ROM_SYSTEM_GB:      return C_SYS_GB;
+    case ROM_SYSTEM_GBC:     return C_SYS_GBC;
+    case ROM_SYSTEM_SNES:    return C_SYS_SNES;
+    case ROM_SYSTEM_GENESIS: return C_SYS_GENESIS;
+    case ROM_SYSTEM_ZIP:     return C_SYS_ZIP;
+    default:                 return C_SYS_NES;
+    }
+}
+
 static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
     const draw_args_t *a = ctx;
 
-    /* 经典 GAMEBOY DMG 绿色 4 阶（C_GB0..C_GB3，见 display.h），不是
-     * 中性灰阶。背景 C_GB0（浅黄绿），标题/正文用最深的 C_GB3 压对比度，
-     * 次要信息用 C_GB2。C_GB0 只留给深色块上的反白字——直接铺在浅色
-     * 背景上对比度太弱，会糊。 */
-    display_clear(C_GB0);
+    /* 配色全部走 display.h 的语义层，别在这里直接写 C_GVB_* 或新色。 */
+    display_clear(C_UI_BG);
 
-    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_GB2);
-    display_text_16(TEXT_X, TITLE_Y, a->title, C_GB3);
+    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_UI_EDGE);
+    display_text_16(TEXT_X, TITLE_Y, a->title, C_UI_FG);
     int meta_x = DISP_FB_W - TEXT_X - display_text_width_16(a->meta);
-    display_text_16(meta_x, TITLE_Y, a->meta, C_GB2);
+    display_text_16(meta_x, TITLE_Y, a->meta, C_UI_FG_DIM);
     display_fill_rect(TEXT_X, HEADER_LINE_Y, DISP_FB_W - 2 * TEXT_X, 1,
-                      C_GB2);
+                      C_UI_LINE);
 
     if (a->category_grid) {
         for (int i = 0; i < a->row_count; i++) {
@@ -133,16 +145,22 @@ static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
             int x = CARD_MARGIN_X + col * (CARD_W + CARD_GAP_X);
             int y = CARD_Y + row * (CARD_H + CARD_GAP_Y);
             bool active = i == a->sel_row;
+            uint16_t accent = system_color(a->systems[i]);
 
-            display_fill_rect(x, y, CARD_W, CARD_H, active ? C_GB2 : C_GB1);
-            display_rect(x, y, CARD_W, CARD_H, active ? C_GB3 : C_GB2);
-            display_text_16(x + 9, y + 6, system_name(a->systems[i]),
-                            active ? C_GB0 : C_GB3);
+            /* 选中的卡片整块铺平台色，没选中的只在左边留一条 5px 色条：
+               六张卡同时铺满色会花，色条已经够认平台。 */
+            display_fill_rect(x, y, CARD_W, CARD_H, active ? accent : C_UI_PANEL);
+            display_rect(x, y, CARD_W, CARD_H,
+                         active ? C_UI_SEL_EDGE : C_UI_EDGE);
+            if (!active) display_fill_rect(x + 1, y + 1, 5, CARD_H - 2, accent);
+
+            display_text_16(x + 13, y + 6, system_name(a->systems[i]),
+                            active ? C_UI_FG_INV : C_UI_FG);
 
             char count_text[24];
             snprintf(count_text, sizeof(count_text), "%d GAMES", a->counts[i]);
-            display_text_16(x + 9, y + 27, count_text,
-                            active ? C_GB1 : C_GB2);
+            display_text_16(x + 13, y + 27, count_text,
+                            active ? C_UI_FG_INV_DIM : C_UI_FG_DIM);
         }
     } else {
         for (int row = 0; row < a->row_count; row++) {
@@ -150,25 +168,29 @@ static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
             bool active = row == a->sel_row;
 
             if (active) {
-                display_fill_rect(6, y - 3, DISP_FB_W - 12, ROW_H - 1, C_GB2);
+                display_fill_rect(6, y - 3, DISP_FB_W - 12, ROW_H - 1, C_UI_SEL);
             } else if (row + 1 < a->row_count) {
                 display_fill_rect(TEXT_X, y + 17, DISP_FB_W - 2 * TEXT_X, 1,
-                                  C_GB1);
+                                  C_UI_LINE);
             }
 
-            display_fill_rect(TEXT_X, y - 1, 31, 17, active ? C_GB3 : C_GB1);
+            /* 编号徽标在选中行里要比行底更深才分得出来，所以用 SEL_EDGE。 */
+            display_fill_rect(TEXT_X, y - 1, 31, 17,
+                              active ? C_UI_SEL_EDGE : C_UI_PANEL_ALT);
             char number[8];
             snprintf(number, sizeof(number), "%02d", a->first_number + row);
-            display_text_16(TEXT_X + 6, y, number, active ? C_GB0 : C_GB2);
-            display_text_16(46, y, a->lines[row], active ? C_GB0 : C_GB2);
-            if (active) display_text_16(DISP_FB_W - 17, y, ">", C_GB0);
+            display_text_16(TEXT_X + 6, y, number,
+                            active ? C_UI_FG_INV : C_UI_FG_DIM);
+            display_text_16(46, y, a->lines[row],
+                            active ? C_UI_FG_INV : C_UI_FG);
+            if (active) display_text_16(DISP_FB_W - 17, y, ">", C_UI_FG_INV);
         }
     }
 
     display_fill_rect(TEXT_X, FOOTER_LINE_Y, DISP_FB_W - 2 * TEXT_X, 1,
-                      C_GB2);
+                      C_UI_LINE);
     display_text_16((DISP_FB_W - display_text_width_16(a->footer)) / 2, FOOTER_Y,
-                    a->footer, C_GB2);
+                    a->footer, C_UI_FG_FAINT);
 }
 
 /* 统计每个平台各有多少游戏，返回分类数。

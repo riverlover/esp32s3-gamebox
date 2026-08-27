@@ -114,38 +114,89 @@ static void screen_diagnostic(void)
 }
 #endif
 
-/* 经典 GAMEBOY DMG 绿色 4 阶（C_GB0..C_GB3，见 display.h），不是中性
- * 灰阶——参照真实一代机屏幕的浅黄绿底色。背景 C_GB0，标题/正文用最深
- * 的 C_GB3 压对比度，次要信息（副标题、分割线、平台色块）用 C_GB2，
- * 比背景深但不抢标题。平台色块以前是每个系统一个专属色、和 rom_menu.c
- * 的 system_color() 对应，改这套配色后没法再用色相区分五个系统，就
- * 统一用 C_GB2——标签文字本身已经写明系统名，颜色只是点缀不是必需信息。
- * splash_strip 和 boot_menu_strip 共用这部分（标题/副标题/平台色块/
+/* 首页字标：七个字母各占一个 gruvbox 色相。
+ *
+ * GAMEBOX 正好 7 个字母，gruvbox 正好 7 个色相，一人一个按光谱排下来——
+ * 这是「用整套 gruvbox」最省事又最像回事的地方。
+ *
+ * 字形放大 4 倍（20x28），靠字号本身撑场面，不加任何底。试过两版加底的：
+ * 七块彩色键帽——单看活泼，但下面 GAME/WORDS/SETTINGS 三张卡片本来就有
+ * 三个色相，七块彩色摞上去整页就散了；一块深色牌匾——够聚焦，但那块黑
+ * 在整屏暖底里太突兀，纯粹是为了给字找个衬底，字放大之后就不需要了。
+ *
+ * 阴影往右下偏 2px 用 LIGHT3：浅底上投影只能投比背景深一点点的暖灰，
+ * 投黑（试过 DARK0 偏 3px）会和字本身一样重，整个字标发脏。 */
+#define WORDMARK_SCALE  4
+#define WORDMARK_H      28    /* 字形 7 行 x 4 倍 */
+#define WORDMARK_SHADOW 2
+
+/* splash 和模式选择页共用，两边都按这个底边排下面的元素。 */
+static int wordmark_bottom(int y)
+{
+    return y + WORDMARK_H + WORDMARK_SHADOW;
+}
+
+static void draw_wordmark(int y)
+{
+    static const char letters[] = "GAMEBOX";
+    static const uint16_t hues[] = {
+        C_GVB_FADED_RED,   C_GVB_FADED_ORANGE, C_GVB_FADED_YELLOW,
+        C_GVB_FADED_GREEN, C_GVB_FADED_AQUA,   C_GVB_FADED_BLUE,
+        C_GVB_FADED_PURPLE,
+    };
+    const int count = (int)(sizeof(letters) - 1);
+    const int scale = WORDMARK_SCALE;
+
+    /* 字形本体 5x7，第 6 列是字间距（见 display.c 的 FONT5X7）：整行宽度
+     * 按步进算要减掉最后一列间距，居中才不会偏右。 */
+    int text_w = count * 6 * scale - scale;
+    int x0 = (DISP_FB_W - text_w) / 2;
+
+    /* 阴影整排画完再画字面。当前步进 24px、字形 20px、偏移 2px，本来就
+     * 不会串到下一个字上，但分两遍就不必依赖这个巧合。 */
+    for (int i = 0; i < count; i++) {
+        char ch[2] = { letters[i], '\0' };
+        display_text(x0 + i * 6 * scale + WORDMARK_SHADOW, y + WORDMARK_SHADOW,
+                     ch, C_GVB_LIGHT3, scale);
+    }
+    for (int i = 0; i < count; i++) {
+        char ch[2] = { letters[i], '\0' };
+        display_text(x0 + i * 6 * scale, y, ch, hues[i], scale);
+    }
+}
+
+/* 配色全部走 display.h 的语义层。平台标签各用自己的 C_SYS_* 色相，和
+ * rom_menu.c 平台卡片上的色条是同一套——开机看到的红/紫/绿/青/蓝，进
+ * 菜单还是这五个色，不用重新认。
+ * splash_strip 和 boot_menu_strip 共用这部分（标题/副标题/平台标签/
  * 上下分割线），只有分割线下方的内容不一样，所以拆出来避免抄两份。 */
 static void splash_frame_common(void)
 {
-    display_clear(C_GB0);
-    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_GB2);
+    display_clear(C_UI_BG);
+    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_UI_EDGE);
 
-    display_text(81, 40, "GAMEBOX", C_GB3, 3);
-    display_text(96, 70, "ESP32-S3  5-IN-1", C_GB2, 1);
+    draw_wordmark(32);
+    display_text(96, 70, "ESP32-S3  5-IN-1", C_UI_FG_DIM, 1);
 
-    display_hline(24, 94, DISP_FB_W - 48, C_GB2);
+    display_hline(24, 94, DISP_FB_W - 48, C_UI_LINE);
 
     static const char *systems[] = { "[NES]", "[SNES]", "[GB]", "[GBC]", "[MD]" };
+    static const uint16_t colors[] = {
+        C_SYS_NES, C_SYS_SNES, C_SYS_GB, C_SYS_GBC, C_SYS_GENESIS,
+    };
     int x = 64;
     for (size_t i = 0; i < sizeof(systems) / sizeof(systems[0]); i++) {
-        display_text(x, 112, systems[i], C_GB2, 1);
+        display_text(x, 112, systems[i], colors[i], 1);
         x += (int)strlen(systems[i]) * 6 + 4;
     }
 
-    display_hline(24, 136, DISP_FB_W - 48, C_GB2);
+    display_hline(24, 136, DISP_FB_W - 48, C_UI_LINE);
 }
 
 static void splash_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
     splash_frame_common();
-    display_text(114, 176, "loading...", C_GB2, 1);
+    display_text(114, 176, "loading...", C_UI_FG_FAINT, 1);
 }
 
 static void splash(void)
@@ -212,13 +263,21 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
         "选择并启动游戏", "按教材学习单词", "声音 亮度 手柄测试"
     };
 
-    display_clear(C_GB0);
-    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_GB2);
-    boot_text_center_ascii(9, "GAMEBOX", C_GB3, 3);
-    boot_text_center_ascii(38, "PLAY  LEARN  EXPLORE", C_GB2, 1);
-    display_hline(24, 55, DISP_FB_W - 48, C_GB2);
+    /* 三个模式各一个色相，和 splash 的平台标签用同一套 gruvbox faded 强调
+     * 色：GAME 橙、WORDS 蓝、SETTINGS 青。这三个只在本页出现，就近定义，
+     * 但取的仍是 display.h 的原色，不自己调新色。 */
+    static const uint16_t accents[BOOT_MODE_COUNT] = {
+        C_GVB_FADED_ORANGE, C_GVB_FADED_BLUE, C_GVB_FADED_AQUA,
+    };
+
+    display_clear(C_UI_BG);
+    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_UI_EDGE);
+    /* 牌匾本身已经是一条足够重的分隔，原来标题下面那条 hline 再画就多余了。 */
+    draw_wordmark(9);
+    boot_text_center_ascii(wordmark_bottom(9) + 5, "PLAY  LEARN  EXPLORE",
+                           C_UI_FG_DIM, 1);
     int choose_w = display_text_width_16("选择模式");
-    display_text_16((DISP_FB_W - choose_w) / 2, 64, "选择模式", C_GB3);
+    display_text_16((DISP_FB_W - choose_w) / 2, 64, "选择模式", C_UI_FG);
 
     for (int i = 0; i < BOOT_MODE_COUNT; i++) {
         const int card_w = 86;
@@ -226,10 +285,12 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
         int x = 8 + i * 93;
         int cx = x + card_w / 2;
         bool active = i == *selected;
-        uint16_t color = active ? C_GB0 : C_GB2;
+        uint16_t color = active ? C_UI_FG_INV : accents[i];
 
-        if (active) display_fill_rect(x, 87, card_w, card_h, C_GB2);
-        display_rect(x, 87, card_w, card_h, active ? C_GB3 : C_GB2);
+        display_fill_rect(x, 87, card_w, card_h,
+                          active ? accents[i] : C_UI_PANEL);
+        display_rect(x, 87, card_w, card_h,
+                     active ? C_UI_SEL_EDGE : C_UI_EDGE);
         boot_draw_icon((boot_mode_t)i, cx, 94, color);
 
         if (i == BOOT_MODE_SETTINGS) {
@@ -243,18 +304,18 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
 
     int desc_w = display_text_width_16(descriptions[*selected]);
     display_text_16((DISP_FB_W - desc_w) / 2, 166,
-                    descriptions[*selected], C_GB3);
+                    descriptions[*selected], C_UI_FG);
     for (int i = 0; i < BOOT_MODE_COUNT; i++) {
         display_fill_rect(124 + i * 16, 188, 8, 4,
-                          i == *selected ? C_GB3 : C_GB1);
+                          i == *selected ? accents[i] : C_UI_LINE);
     }
     int footer_w = display_text_width_16("左右选择  A确认");
     display_text_16((DISP_FB_W - footer_w) / 2, 204,
-                    "左右选择  A确认", C_GB2);
+                    "左右选择  A确认", C_UI_FG_FAINT);
 }
 
 /* 独立设置页沿用 retro-go 的 Options 结构：纯色面板、居中标题、反选行；
- * 颜色统一复用主页和 ROM 菜单的四阶 Game Boy 绿色。设置仍只对本次开机
+ * 颜色统一复用 display.h 的语义层。设置仍只对本次开机
  * 有效，避免孩子不小心静音后每次上电都以为机器坏了。 */
 #define SETTINGS_COUNT       3
 #define SETTINGS_BRIGHTNESS  0
@@ -268,8 +329,8 @@ static void settings_strip(uint16_t *strip, int y0, int h, void *ctx)
     (void)h;
     int selected = *(const int *)ctx;
 
-    display_clear(C_GB0);
-    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_GB2);
+    display_clear(C_UI_BG);
+    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_UI_EDGE);
 
     const int box_x = 27;
     const int box_y = 34;
@@ -280,12 +341,13 @@ static void settings_strip(uint16_t *strip, int y0, int h, void *ctx)
     const int row_y = box_y + 39;
     const int row_h = 24;
 
-    display_fill_rect(box_x, box_y, box_w, box_h, C_GB1);
-    display_rect(box_x, box_y, box_w, box_h, C_GB3);
+    display_fill_rect(box_x, box_y, box_w, box_h, C_UI_PANEL);
+    display_rect(box_x, box_y, box_w, box_h, C_UI_EDGE);
 
     const char *title = "Options";
     display_text_16(box_x + (box_w - display_text_width_16(title)) / 2,
-                    box_y + 9, title, C_GB3);
+                    box_y + 9, title, C_UI_FG);
+    display_fill_rect(box_x + 9, box_y + 30, box_w - 18, 1, C_UI_LINE);
 
     char rows[SETTINGS_COUNT][28];
     snprintf(rows[SETTINGS_BRIGHTNESS], sizeof(rows[0]),
@@ -296,20 +358,20 @@ static void settings_strip(uint16_t *strip, int y0, int h, void *ctx)
 
     for (int i = 0; i < SETTINGS_COUNT; i++) {
         int y = row_y + i * row_h;
-        uint16_t fg = C_GB2;
+        uint16_t fg = C_UI_FG_DIM;
         if (i == selected) {
-            display_fill_rect(row_x, y - 2, row_w, row_h - 2, C_GB2);
-            fg = C_GB0;
+            display_fill_rect(row_x, y - 2, row_w, row_h - 2, C_UI_SEL);
+            fg = C_UI_FG_INV;
         }
         display_text_16(row_x + 6, y, rows[i], fg);
     }
 
     int hint1_w = display_text_width_16("上下选择  左右调整");
     display_text_16((DISP_FB_W - hint1_w) / 2, 178,
-                    "上下选择  左右调整", C_GB3);
+                    "上下选择  左右调整", C_UI_FG);
     int hint2_w = display_text_width_16("A进入测试  B返回");
     display_text_16((DISP_FB_W - hint2_w) / 2, 202,
-                    "A进入测试  B返回", C_GB2);
+                    "A进入测试  B返回", C_UI_FG_FAINT);
 }
 
 static void settings_menu(bool *refresh_rom_index)

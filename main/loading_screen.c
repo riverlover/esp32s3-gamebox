@@ -65,27 +65,32 @@ static void loading_strip(uint16_t *strip, int y0, int h, void *ctx)
     (void)y0;
     (void)h;
 
-    display_clear(C_GB0);
-    display_text_16(TEXT_X, TITLE_Y, a->error ? "加载失败" : "正在加载", C_GB3);
+    display_clear(C_UI_BG);
+    display_text_16(TEXT_X, TITLE_Y, a->error ? "加载失败" : "正在加载",
+                    a->error ? C_UI_BAD : C_UI_FG);
 
     int name_x = (DISP_FB_W - display_text_width_16(a->name)) / 2;
     if (name_x < TEXT_X) name_x = TEXT_X;
-    display_text_16(name_x, NAME_Y, a->name, C_GB2);
+    display_text_16(name_x, NAME_Y, a->name, C_UI_FG_DIM);
 
-    display_text_16(TEXT_X, STAGE_Y, a->stage, a->error ? C_RED : C_GB2);
-    display_rect(BAR_X, BAR_Y, BAR_W, BAR_H, C_GB2);
+    display_text_16(TEXT_X, STAGE_Y, a->stage, a->error ? C_UI_BAD : C_UI_FG_DIM);
+
+    /* 进度条：槽比页面底深一档，填充用 C_UI_BAR（neutral_blue）——它上面
+       不写字，正好用得上 neutral 那组更亮的彩色。 */
+    display_fill_rect(BAR_X, BAR_Y, BAR_W, BAR_H, C_UI_PANEL_ALT);
+    display_rect(BAR_X, BAR_Y, BAR_W, BAR_H, C_UI_EDGE);
     int fill = (BAR_W - 4) * (int)a->percent / 100;
     if (fill > 0) {
         display_fill_rect(BAR_X + 2, BAR_Y + 2, fill, BAR_H - 4,
-                          a->error ? C_RED : C_GB2);
+                          a->error ? C_UI_BAD : C_UI_BAR);
     }
 
     char percent[8];
     snprintf(percent, sizeof(percent), "%u%%", a->percent);
     display_text_16((DISP_FB_W - display_text_width_16(percent)) / 2, PERCENT_Y,
-                    percent, a->error ? C_RED : C_GB3);
+                    percent, a->error ? C_UI_BAD : C_UI_FG);
     display_text_16((DISP_FB_W - display_text_width_16("请勿拔出 TF 卡")) / 2,
-                    FOOTER_Y, "请勿拔出 TF 卡", C_GB2);
+                    FOOTER_Y, "请勿拔出 TF 卡", C_UI_WARN);
 }
 
 static void render(bool error, unsigned percent)

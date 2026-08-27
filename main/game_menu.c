@@ -52,9 +52,11 @@ typedef struct {
     const char *footer;
 } menu_draw_t;
 
+/* 提示框把状态色画成**底色**、文字固定 C_UI_FG_INV 反白。别改回「状态色
+ * 当文字色」：那样红字压在深色框上只有 1.6:1，SAVE FAILED 基本看不见。 */
 typedef struct {
     const char *text;
-    uint16_t color;
+    uint16_t fill;
 } notice_t;
 
 static void notice_strip(uint16_t *strip, int y0, int h, void *ctx)
@@ -63,11 +65,11 @@ static void notice_strip(uint16_t *strip, int y0, int h, void *ctx)
     (void)strip;
     (void)y0;
     (void)h;
-    display_clear(C_GB0);
+    display_clear(C_UI_BG);
     int w = display_text_width_16(n->text);
-    display_fill_rect(24, 96, DISP_W - 48, 48, C_GB2);
-    display_rect(24, 96, DISP_W - 48, 48, C_GB3);
-    display_text_16((DISP_W - w) / 2, 112, n->text, n->color);
+    display_fill_rect(24, 96, DISP_W - 48, 48, n->fill);
+    display_rect(24, 96, DISP_W - 48, 48, C_UI_SEL_EDGE);
+    display_text_16((DISP_W - w) / 2, 112, n->text, C_UI_FG_INV);
 }
 
 static uint16_t poll_input(void)
@@ -82,16 +84,16 @@ static void draw_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
     (void)y0;
     (void)h;
 
-    display_clear(C_GB0);
-    display_rect(0, 0, DISP_W, DISP_H, C_GB2);
-    display_text_16(10, 9, m->title, C_GB3);
-    display_fill_rect(10, 29, DISP_W - 20, 1, C_GB2);
+    display_clear(C_UI_BG);
+    display_rect(0, 0, DISP_W, DISP_H, C_UI_EDGE);
+    display_text_16(10, 9, m->title, C_UI_FG);
+    display_fill_rect(10, 29, DISP_W - 20, 1, C_UI_LINE);
 
     for (int i = 0; i < m->count; i++) {
         int y = 39 + i * 30;
         bool active = i == m->selected;
         if (active) {
-            display_fill_rect(8, y - 4, DISP_W - 16, 25, C_GB2);
+            display_fill_rect(8, y - 4, DISP_W - 16, 25, C_UI_SEL);
         }
 
         char line[32];
@@ -101,13 +103,13 @@ static void draw_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
         } else {
             snprintf(line, sizeof(line), "%s", m->items[i]);
         }
-        display_text_16(18, y, line, active ? C_GB0 : C_GB3);
-        if (active) display_text_16(DISP_W - 26, y, ">", C_GB0);
+        display_text_16(18, y, line, active ? C_UI_FG_INV : C_UI_FG);
+        if (active) display_text_16(DISP_W - 26, y, ">", C_UI_FG_INV);
     }
 
-    display_fill_rect(10, 214, DISP_W - 20, 1, C_GB2);
+    display_fill_rect(10, 214, DISP_W - 20, 1, C_UI_LINE);
     int footer_w = display_text_width_16(m->footer);
-    display_text_16((DISP_W - footer_w) / 2, 219, m->footer, C_GB2);
+    display_text_16((DISP_W - footer_w) / 2, 219, m->footer, C_UI_FG_FAINT);
 }
 
 static void stream_menu_sync(disp_strip_fn fn, void *ctx)
@@ -118,9 +120,9 @@ static void stream_menu_sync(disp_strip_fn fn, void *ctx)
     display_wait_idle();
 }
 
-static void show_message(const char *message, uint16_t color)
+static void show_message(const char *message, uint16_t fill)
 {
-    notice_t notice = {message, color};
+    notice_t notice = {message, fill};
     stream_menu_sync(notice_strip, &notice);
 }
 
@@ -298,7 +300,7 @@ static int select_slot(const game_menu_config_t *config, bool saving)
         int slot = run_list(&draw);
         if (slot < 0) return -1;
         if (saving || draw.used[slot]) return slot;
-        show_message("NO SAVE", C_GB0);
+        show_message("NO SAVE", C_UI_WARN);
         vTaskDelay(pdMS_TO_TICKS(600));
         stream_menu_sync(draw_menu_strip, &draw);
     }
@@ -344,17 +346,17 @@ game_menu_result_t game_menu_open(const game_menu_config_t *config)
         if (action == 0 || action == 1) {
             int slot = select_slot(config, true);
             if (slot < 0) continue;
-            show_message("SAVING...", C_GB0);
+            show_message("SAVING...", C_UI_SEL);
             bool ok = save_slot(config, slot);
-            show_message(ok ? "SAVE OK" : "SAVE FAILED", ok ? C_GB0 : C_RED);
+            show_message(ok ? "SAVE OK" : "SAVE FAILED", ok ? C_UI_OK : C_UI_BAD);
             vTaskDelay(pdMS_TO_TICKS(700));
             if (ok) return action == 1 ? GAME_MENU_RESTART : GAME_MENU_CONTINUE;
         } else if (action == 2) {
             int slot = select_slot(config, false);
             if (slot < 0) continue;
-            show_message("LOADING...", C_GB0);
+            show_message("LOADING...", C_UI_SEL);
             bool ok = load_slot(config, slot);
-            show_message(ok ? "LOAD OK" : "LOAD FAILED", ok ? C_GB0 : C_RED);
+            show_message(ok ? "LOAD OK" : "LOAD FAILED", ok ? C_UI_OK : C_UI_BAD);
             vTaskDelay(pdMS_TO_TICKS(700));
             if (ok) return GAME_MENU_CONTINUE;
         } else if (action == 3) {
