@@ -25,11 +25,18 @@ import sys
 # 多约 225 KB（每字形 34 字节：uint16 码点 + 32 字节点阵），app 分区当时
 # 还剩 548 KiB，装得下。这个项目里 flash 是最不紧张的资源，拿它换掉一类
 # 「会忘、忘了还不报错」的维护负担很划算。
+#
+# 2026-08-28 又把符号区（1~9 区）补上，理由和上面完全一样。原来只收汉字，
+# 结果游戏名里的 ★☆ 全被 display_text_16() 当成未知码点，回落到 ASCII 分支
+# 后按 `?` 画出来 —— 而且不止这两个：○ ※ 、 「」 和全角字母、假名，凡是
+# GB2312 里的非汉字符号一个都没有。补全只多 682 个字形（约 23 KB）。
 def gb2312_codepoints():
-    """GB2312 的 6763 个汉字。按区位 0xB0A1~0xF7FE 遍历解码得到，
-    比维护一张字表可靠——字表抄错了不会有人发现。"""
+    """GB2312 全部 7445 个字符：符号区 1~9 区 + 汉字 16~87 区。
+
+    按区位 0xA1A1~0xF7FE 遍历解码得到，比维护一张字表可靠——字表抄错了
+    不会有人发现。10~15 区在 GB2312 里是空的，解码失败自然跳过。"""
     out = set()
-    for high in range(0xB0, 0xF8):
+    for high in range(0xA1, 0xF8):
         for low in range(0xA1, 0xFF):
             try:
                 out.add(ord(bytes([high, low]).decode("gb2312")))
@@ -41,6 +48,25 @@ def gb2312_codepoints():
 # 游戏名偶尔会撞上 GB2312 之外的字（繁体、日文假名）。往这里加单个字即可，
 # 比整段换成 GBK（21886 字、约 740 KB）划算得多。
 EXTRA_TEXT = ""
+
+
+def widen(narrow):
+    """把 8x16 字形居中填进 16x16 的格子，返回 32 字节。
+
+    符号区里有 295 个字符（○ ● ■ ※ ← → “ ” … 罗马数字、希腊、西里尔、
+    制表符）在 Unifont 里画的是 8x16 半角字形，但它们在 GB2312 里本来就占
+    一个双字节码位、是**全角**字符 —— Unifont 只是把字形画窄了。所以居中
+    补进全角格子才是对的，渲染出来的间距符合中文排版预期。
+
+    唯一的代价是制表符（─ │ ┌ ┐ …）左右会各留 4px，拼不成连续的线。这个
+    项目不画表格，游戏名里也基本不会出现，不值得为它把字库拆成宽窄两套、
+    再给 display_text_16() 加一条 9px 步进的分支。"""
+    out = bytearray()
+    for byte in narrow:
+        row = byte << 4                 # 左右各留 4px
+        out.append(row >> 8)
+        out.append(row & 0xFF)
+    return bytes(out)
 
 
 def read_hex(path):
@@ -60,14 +86,19 @@ def read_hex(path):
             if codepoint not in wanted_wide and codepoint not in wanted_ascii:
                 continue
             bitmap = bytes.fromhex(bitmap_hex)
-            expected = 16 if codepoint in wanted_ascii else 32
-            if len(bitmap) != expected:
-                raise SystemExit(
-                    "U+%04X 字形应为 %d 字节，实际 %d 字节" %
-                    (codepoint, expected, len(bitmap)))
             if codepoint in wanted_ascii:
+                if len(bitmap) != 16:
+                    raise SystemExit(
+                        "U+%04X ASCII 字形应为 16 字节，实际 %d 字节" %
+                        (codepoint, len(bitmap)))
                 found_ascii[codepoint] = bitmap
             else:
+                if len(bitmap) == 16:
+                    bitmap = widen(bitmap)
+                elif len(bitmap) != 32:
+                    raise SystemExit(
+                        "U+%04X 全角字形应为 32 或 16 字节，实际 %d 字节" %
+                        (codepoint, len(bitmap)))
                 found_wide[codepoint] = bitmap
 
     missing = (wanted_wide - found_wide.keys()) | (wanted_ascii - found_ascii.keys())
