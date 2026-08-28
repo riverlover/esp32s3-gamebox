@@ -16,6 +16,7 @@
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "display.h"
 #include "audio_output.h"
 #include "input_serial.h"
@@ -131,13 +132,17 @@ static void screen_diagnostic(void)
 #define WORDMARK_H      28    /* 字形 7 行 x 4 倍 */
 #define WORDMARK_SHADOW 2
 
-/* splash 和模式选择页共用，两边都按这个底边排下面的元素。 */
+/* 入场动画和模式选择页共用，两边都按这个底边排下面的元素。 */
 static int wordmark_bottom(int y)
 {
     return y + WORDMARK_H + WORDMARK_SHADOW;
 }
 
-static void draw_wordmark(int y)
+/* dy 为每个字母的纵向偏移，用来做开机动画的逐字下落；传 NULL 就是静止。
+ * 偏移等于 WORDMARK_HIDDEN 的字母整个不画。 */
+#define WORDMARK_HIDDEN  (-9999)
+
+static void draw_wordmark_ex(int y, const int *dy)
 {
     static const char letters[] = "GAMEBOX";
     static const uint16_t hues[] = {
@@ -156,54 +161,228 @@ static void draw_wordmark(int y)
     /* 阴影整排画完再画字面。当前步进 24px、字形 20px、偏移 2px，本来就
      * 不会串到下一个字上，但分两遍就不必依赖这个巧合。 */
     for (int i = 0; i < count; i++) {
+        if (dy && dy[i] == WORDMARK_HIDDEN) continue;
+        int oy = dy ? dy[i] : 0;
         char ch[2] = { letters[i], '\0' };
-        display_text(x0 + i * 6 * scale + WORDMARK_SHADOW, y + WORDMARK_SHADOW,
-                     ch, C_GVB_LIGHT3, scale);
+        display_text(x0 + i * 6 * scale + WORDMARK_SHADOW,
+                     y + oy + WORDMARK_SHADOW, ch, C_GVB_LIGHT3, scale);
     }
     for (int i = 0; i < count; i++) {
+        if (dy && dy[i] == WORDMARK_HIDDEN) continue;
+        int oy = dy ? dy[i] : 0;
         char ch[2] = { letters[i], '\0' };
-        display_text(x0 + i * 6 * scale, y, ch, hues[i], scale);
+        display_text(x0 + i * 6 * scale, y + oy, ch, hues[i], scale);
     }
 }
 
-/* 配色全部走 display.h 的语义层。平台标签各用自己的 C_SYS_* 色相，和
- * rom_menu.c 平台卡片上的色条是同一套——开机看到的红/紫/绿/青/蓝，进
- * 菜单还是这五个色，不用重新认。
- * splash_strip 和 boot_menu_strip 共用这部分（标题/副标题/平台标签/
- * 上下分割线），只有分割线下方的内容不一样，所以拆出来避免抄两份。 */
-static void splash_frame_common(void)
+static void draw_wordmark(int y)
 {
+    draw_wordmark_ex(y, NULL);
+}
+
+/* ============ 开机音效 ============
+ *
+ * 一段自己写的方波上行分解和弦（C-E-G-C），最后一个音带线性衰减。
+ * 音色照 GB 那两路脉冲通道的路子走 —— 方波、无滤波、整数分频，所以听感
+ * 是同一挂的，但**不是复刻任天堂那段开机音**：那是它家的版权资产，而本仓库
+ * 对许可一向较真（见 README 的「授权」一节），不往里塞来源不明的素材。
+ *
+ * 每个音都带 3 ms 起振和 8 ms 收尾，不加的话方波从零直接跳到峰值会「啪」
+ * 一声，比音符本身还响。 */
+typedef struct {
+    int freq_hz;
+    int ms;
+} chime_note_t;
+
+static const chime_note_t CHIME[] = {
+    { 523,  70 },   /* C5 */
+    { 659,  70 },   /* E5 */
+    { 784,  70 },   /* G5 */
+    { 1047, 340 },  /* C6，收尾音，衰减到静音 */
+};
+
+#define CHIME_RATE      AUDIO_OUTPUT_SAMPLE_RATE
+#define CHIME_PEAK      13000          /* 约 40% 满量程，后端还会再乘音量档位 */
+#define CHIME_EDGE_MS   3
+#define CHIME_TAIL_MS   8
+#define CHIME_CHUNK     256            /* 一次提交的立体声帧数 */
+
+static uint32_t chime_total_ms(void)
+{
+    uint32_t ms = 0;
+    for (size_t i = 0; i < sizeof(CHIME) / sizeof(CHIME[0]); i++) ms += CHIME[i].ms;
+    return ms;
+}
+
+/* 按绝对采样下标生成，调用方只要往前推 index 就能分块取，不用保存相位。 */
+static void chime_fill(int16_t *out, size_t frames, uint32_t index)
+{
+    const size_t n_notes = sizeof(CHIME) / sizeof(CHIME[0]);
+
+    for (size_t k = 0; k < frames; k++) {
+        uint32_t n = index + (uint32_t)k;
+        uint32_t t_ms = n * 1000u / CHIME_RATE;
+
+        int note = -1;
+        uint32_t acc = 0;
+        for (size_t i = 0; i < n_notes; i++) {
+            if (t_ms < acc + (uint32_t)CHIME[i].ms) { note = (int)i; break; }
+            acc += (uint32_t)CHIME[i].ms;
+        }
+
+        int16_t v = 0;
+        if (note >= 0) {
+            uint32_t into = t_ms - acc;
+            uint32_t len  = (uint32_t)CHIME[note].ms;
+
+            /* 方波：半周期的采样数用整数除，轻微失准在 8-bit 音色里听不出来。 */
+            uint32_t half = CHIME_RATE / (uint32_t)(CHIME[note].freq_hz * 2);
+            if (half == 0) half = 1;
+            int sign = ((n / half) & 1u) ? 1 : -1;
+
+            int amp = CHIME_PEAK;
+            /* 最后一个音整段线性衰减，前面几个音保持等响。 */
+            if (note == (int)n_notes - 1) amp = (int)((uint32_t)amp * (len - into) / len);
+            if (into < CHIME_EDGE_MS) amp = amp * (int)into / CHIME_EDGE_MS;
+            if (len - into < CHIME_TAIL_MS) amp = amp * (int)(len - into) / CHIME_TAIL_MS;
+
+            v = (int16_t)(sign * amp);
+        }
+        out[k * 2]     = v;
+        out[k * 2 + 1] = v;
+    }
+}
+
+/* 字标在模式选择页的最终纵坐标。入场动画把字母落到这里，之后原地不动，
+ * 所以这个值动画和菜单必须共用，改一处就够。 */
+#define BOOT_WORDMARK_Y   9
+
+/* ============ 模式选择页的入场动画 ============
+ *
+ * 以前这里是一张独立的开机画面（GAMEBOX + 平台列表 + loading...），停 1.5 秒
+ * 之后才进模式选择页。去掉了，理由有三条：
+ *
+ *   - 紧接着的模式选择页会再画一遍同样的字标和副标题，等于连着看两次 logo；
+ *   - 这机器靠重启换游戏（模拟器一进去就不返回），那段等待是**按次**付的，
+ *     一晚上要付几十次；
+ *   - 那屏上写着「5-IN-1」和五个平台标签，加了 PC Engine 之后就是错的。
+ *
+ * 现在改成：动画直接把模式选择页的字标送进场，字标落到的就是那页的最终位置
+ * （y = BOOT_WORDMARK_Y），动画结束后它原地不动，菜单其余部分在它下面补齐 ——
+ * 视觉上是一个连续的过程，不是两屏。
+ *
+ * ⚠ 这段必须跑在 input_*_init() **之前**：显示就绪到手柄初始化完成之间有约
+ * 0.68 秒（USB host 那段最慢），原来是靠开机画面的最终帧挡着的。把动画整个
+ * 挪到 boot_menu() 里就会在那 0.68 秒露出黑屏，看着像卡住。所以动画在这里
+ * 放完，之后那 0.68 秒由落定的字标继续占屏。
+ *
+ * 也因此这段**没法做成按键跳过** —— 输入子系统还没初始化。0.46 秒，够短。
+ *
+ * ⚠ 整份绘制列表每帧会被逐条带调用 7 次（见 display.h），所以动画状态必须
+ * 放在 ctx 里由调用方算好，不能在绘制函数里自增 —— 那样一帧之内七个条带
+ * 会各自看到不同的状态，画面会横向撕成七段。 */
+#define INTRO_CRT_END      9
+#define INTRO_LETTER_STEP  3
+#define INTRO_LETTER_DUR   9
+#define INTRO_TOTAL        (INTRO_CRT_END + 6 * INTRO_LETTER_STEP + INTRO_LETTER_DUR + 2)
+
+/* 第 i 个字母在第 f 帧的纵向偏移。二次缓出下落，末尾两帧压一下再弹回，
+ * 比匀速落地有重量感。
+ *
+ * 落差取 30px 而不是更大：字标基线在 BOOT_WORDMARK_Y，落差再大起始点就跑到
+ * 画布外，头两帧字母整个看不见 —— 渲染成序列图才发现 CRT 拉完和第一个字母
+ * 露头之间空了一拍，而且字母入场时顶部被画布裁掉半截。 */
+static int intro_letter_dy(int f, int i)
+{
+    int start = INTRO_CRT_END + i * INTRO_LETTER_STEP;
+    if (f < start) return WORDMARK_HIDDEN;
+
+    int t = f - start;
+    if (t >= INTRO_LETTER_DUR) return 0;
+
+    const int fall = INTRO_LETTER_DUR - 2;
+    if (t < fall) {
+        int r = fall - t;                 /* 剩余步数，二次缓出 */
+        return -(30 * r * r) / (fall * fall);
+    }
+    return (t == fall) ? 3 : 1;           /* 触底压一下再回正 */
+}
+
+static void intro_strip(uint16_t *strip, int y0, int h, void *ctx)
+{
+    int f = *(const int *)ctx;
+
+    /* 黑底上一条亮带从中心纵向拉开，像 CRT 通电。上下缘用 bright_yellow ——
+     * gruvbox 那组本来就是配深色底的，这是全工程唯一用得上它的地方。 */
+    if (f < INTRO_CRT_END) {
+        display_clear(C_BLACK);
+        int half = (DISP_FB_H / 2) * (f + 1) / INTRO_CRT_END;
+        int top = DISP_FB_H / 2 - half;
+        display_fill_rect(0, top, DISP_FB_W, half * 2, C_UI_BG);
+        display_hline(0, top, DISP_FB_W, C_GVB_BRIGHT_YELLOW);
+        display_hline(0, top + half * 2 - 1, DISP_FB_W, C_GVB_BRIGHT_YELLOW);
+        return;
+    }
+
+    /* 底色和外框就是模式选择页的，动画结束后无缝接上。 */
     display_clear(C_UI_BG);
     display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_UI_EDGE);
 
-    draw_wordmark(32);
-    display_text(96, 70, "ESP32-S3  5-IN-1", C_UI_FG_DIM, 1);
+    int dy[7];
+    for (int i = 0; i < 7; i++) dy[i] = intro_letter_dy(f, i);
+    draw_wordmark_ex(BOOT_WORDMARK_Y, dy);
+}
 
-    display_hline(24, 94, DISP_FB_W - 48, C_UI_LINE);
+/* 已经该产出多少个采样了（按真实经过时间算）。 */
+static uint32_t chime_due(int64_t t0, uint32_t total)
+{
+    int64_t us = esp_timer_get_time() - t0;
+    if (us < 0) return 0;
+    uint32_t due = (uint32_t)(us * CHIME_RATE / 1000000);
+    return due > total ? total : due;
+}
 
-    static const char *systems[] = { "[NES]", "[SNES]", "[GB]", "[GBC]", "[MD]" };
-    static const uint16_t colors[] = {
-        C_SYS_NES, C_SYS_SNES, C_SYS_GB, C_SYS_GBC, C_SYS_GENESIS,
-    };
-    int x = 64;
-    for (size_t i = 0; i < sizeof(systems) / sizeof(systems[0]); i++) {
-        display_text(x, 112, systems[i], colors[i], 1);
-        x += (int)strlen(systems[i]) * 6 + 4;
+static void boot_intro(void)
+{
+    /* 上电音就该在上电那一刻响，所以音效和动画同时开始。
+     *
+     * ⚠ 必须按真实经过时间分批喂，不能一次灌完：audio_output 的队列只有
+     * AUDIO_QUEUE_FRAMES(4) 个包、约 88 ms，一次性提交剩下的会被直接丢掉
+     * （那条接口队列满时丢包并计数，不阻塞）。 */
+    bool sound = audio_output_init(CHIME_RATE) == ESP_OK;
+    uint32_t total = chime_total_ms() * CHIME_RATE / 1000;
+    uint32_t sent = 0;
+    int64_t t0 = esp_timer_get_time();
+    static int16_t chunk[CHIME_CHUNK * 2];
+
+    for (int f = 0; f < INTRO_TOTAL; f++) {
+        /* display_stream_sync() 阻塞到这一帧推完才返回，默认 288x224 画布实测
+         * 约 13 ms/帧，所以循环本身就是节流器，整段约 0.49 秒。 */
+        display_stream_sync(intro_strip, &f);
+
+        if (!sound) continue;
+        uint32_t due = chime_due(t0, total);
+        while (sent < due) {
+            size_t n = due - sent;
+            if (n > CHIME_CHUNK) n = CHIME_CHUNK;
+            chime_fill(chunk, n, sent);
+            audio_output_submit_stereo(chunk, n);
+            sent += (uint32_t)n;
+        }
     }
 
-    display_hline(24, 136, DISP_FB_W - 48, C_UI_LINE);
-}
-
-static void splash_strip(uint16_t *strip, int y0, int h, void *ctx)
-{
-    splash_frame_common();
-    display_text(114, 176, "loading...", C_UI_FG_FAINT, 1);
-}
-
-static void splash(void)
-{
-    display_stream_sync(splash_strip, NULL);
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    /* 音效比动画长几十毫秒，把尾巴喂完再走，否则收尾音会被切断。 */
+    while (sound && sent < total) {
+        uint32_t due = chime_due(t0, total);
+        while (sent < due) {
+            size_t n = due - sent;
+            if (n > CHIME_CHUNK) n = CHIME_CHUNK;
+            chime_fill(chunk, n, sent);
+            audio_output_submit_stereo(chunk, n);
+            sent += (uint32_t)n;
+        }
+        if (sent < total) vTaskDelay(pdMS_TO_TICKS(5));
+    }
 }
 
 /* loading 那 1.5 秒过完之后，开机画面停下来问 GAME/WORDS/SETTINGS，不再自动往下走——
@@ -264,9 +443,9 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
         "选择并启动游戏", "按教材学习单词", "声音 亮度 手柄测试"
     };
 
-    /* 三个模式各一个色相，和 splash 的平台标签用同一套 gruvbox faded 强调
-     * 色：GAME 橙、WORDS 蓝、SETTINGS 青。这三个只在本页出现，就近定义，
-     * 但取的仍是 display.h 的原色，不自己调新色。 */
+    /* 三个模式各一个色相，取的是 display.h 里 gruvbox 的 faded 强调色：
+     * GAME 橙、WORDS 蓝、SETTINGS 青。只在本页出现，就近定义，但不自己
+     * 调新色。 */
     static const uint16_t accents[BOOT_MODE_COUNT] = {
         C_GVB_FADED_ORANGE, C_GVB_FADED_BLUE, C_GVB_FADED_AQUA,
     };
@@ -274,8 +453,8 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
     display_clear(C_UI_BG);
     display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_UI_EDGE);
     /* 牌匾本身已经是一条足够重的分隔，原来标题下面那条 hline 再画就多余了。 */
-    draw_wordmark(9);
-    boot_text_center_ascii(wordmark_bottom(9) + 5, "PLAY  LEARN  EXPLORE",
+    draw_wordmark(BOOT_WORDMARK_Y);
+    boot_text_center_ascii(wordmark_bottom(BOOT_WORDMARK_Y) + 5, "PLAY  LEARN  EXPLORE",
                            C_UI_FG_DIM, 1);
     int choose_w = display_text_width_16("选择模式");
     display_text_16((DISP_FB_W - choose_w) / 2, 64, "选择模式", C_UI_FG);
@@ -496,7 +675,7 @@ void app_main(void)
 #if SHOW_DISPLAY_SELFTEST
     screen_diagnostic();
 #endif
-    splash();
+    boot_intro();
 
     /* boot_menu() 要读输入，所以三路输入源在这里先装好；rom_menu_pick()
      * 里还会再调一遍，都是幂等的，不会重复初始化出问题。
