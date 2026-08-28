@@ -77,16 +77,50 @@ static const char *TAG = "pce";
 #define PCE_FB_BYTES        (XBUF_WIDTH * XBUF_HEIGHT + 32)
 #define PCE_FRAME_PERIOD_US 16667      /* PCE 是 60 Hz */
 
-/* 24000 / 60 = 400 个立体声帧。psg.c 里那句注释说得很明白：DDA（采样
- * 回放）通道并不跟踪每个采样该播多久，靠的是「一帧里被调用足够多次」
- * 来近似，上游按每帧约 10 次调。所以这里不能图省事一帧只调一次大的，
- * 拆成 8 段填进同一个缓冲，最后一次性提交给 I2S。
+/* ⚠ PCE 不能用工程通用的 24 kHz，必须走 pce-go 自己的速率。
  *
- * 另一个必须拆的理由：psg_update() 内部是 `sample_t mix_buffer[length+1]`
- * 这样的**栈上变长数组**，length 越大越吃栈。 */
-#define PCE_AUDIO_FRAMES     (AUDIO_OUTPUT_SAMPLE_RATE / 60)
-#define PCE_AUDIO_CHUNKS     8
-#define PCE_AUDIO_CHUNK      (PCE_AUDIO_FRAMES / PCE_AUDIO_CHUNKS)
+ * 上游 retro-go 的 main_pce.c 专门为这个核心覆盖了全局采样率
+ * （`#undef AUDIO_SAMPLE_RATE` / `#define AUDIO_SAMPLE_RATE 22050`），
+ * 而 psg.c 内部 DDA（采样回放）通道的时序注释写的是「Samples per frame:
+ * 368」——368 x 60 = 22080。DDA 不跟踪每个采样该播多久，靠 `repeat = 3`
+ * 这类按 ~22050 调出来的硬编码近似，喂 24 kHz 会让采样播放速率错位，
+ * 听感是破音而不是卡顿。
+ *
+ * 取 368/帧、I2S 配 22080 Hz：两边严格相等，不留累积漂移。这是本仓库
+ * 已有的做法 —— gbc_emu.c 同样是按核心真实速率去配 I2S，那里的注释记着
+ * 不匹配时队列每秒净增约 105 帧并周期性丢包。
+ *
+ * ⚠ 采样要跟着一帧之内 PSG 寄存器的变化走，不能等整帧模拟完再一次性生成
+ * ——那样所有采样看到的都是同一份「帧末状态」，帧内的包络变化和 DDA 写入
+ * 全被抹平，音频粒度变成 16.7 ms 一跳，听感是破音。
+ *
+ * 取样点选在 osd_gfx_framebuffer()：gfx.c 的 render_lines() 一帧之内会随
+ * 光栅推进**多次**调它，天然就是交错的，而且全程在核 0 的模拟上下文里，
+ * 没有跨核竞争。跳帧时 render_lines() 照样会调它（只是拿到 NULL 后立刻
+ * 返回），所以这个钩子在跳帧那一帧也照常触发。
+ *
+ * ⚠ 不要改成「起一个音频任务和模拟并发地取样」，虽然上游 retro-go 就是
+ * 那么做的。试过：任务钉在核 1、优先级 5，和 lcd_blit 推屏任务**同核同
+ * 优先级**，而它在队列有空位时是 CPU 密集且从不主动阻塞的，按 tick 轮转
+ * 直接把推屏吞吐腰斩，核 0 卡在 display_wait_idle() 上越等越久。表现是
+ * 游戏静默卡死，而且因为核 0 是阻塞不是空转，任务看门狗根本不响。
+ * 上游那个模型依赖它自己的调度假设，和本项目「核 0 画、核 1 推、互不
+ * 抢占」的分工冲突。psg_update() 还会就地修改 chan->dda_count，跨核调用
+ * 本身也是数据竞争。
+ *
+ * 每段 46 帧（368/8）：psg_update() 内部是 `sample_t mix_buffer[length+1]`
+ * 这样的**栈上变长数组**，取太大吃栈。上游每帧调约 10 次，这里 8 次。 */
+#define PCE_AUDIO_FRAMES     368
+#define PCE_AUDIO_RATE       (PCE_AUDIO_FRAMES * 60)   /* 22080 Hz */
+#define PCE_AUDIO_CHUNK      46
+
+_Static_assert(PCE_AUDIO_FRAMES % PCE_AUDIO_CHUNK == 0,
+               "分段要能整除，否则帧末补齐会算错");
+_Static_assert(PCE_AUDIO_FRAMES <= AUDIO_OUTPUT_MAX_FRAMES_PER_PACKET,
+               "一帧的音频要能装进一个 I2S 包");
+
+_Static_assert(PCE_AUDIO_FRAMES <= AUDIO_OUTPUT_MAX_FRAMES_PER_PACKET,
+               "一帧的音频要能装进一个 I2S 包");
 
 /* SELECT+X 打开游戏内菜单，和 GB/GBC 一致。X 是宿主公共高位，
  * 不占 PCE 原机按键（原机只有 I/II/SELECT/RUN）。 */
@@ -131,8 +165,9 @@ static bool         s_mirrored;
  * 所以没有启用。将来真要捡这 10 帧，得先给 gwenesis 腾出这 30 KB。 */
 static bool         s_skip_frame;
 
-static int16_t   s_audio[PCE_AUDIO_FRAMES * 2];
 static int64_t   s_next_frame_us;
+static int16_t   s_audio[PCE_AUDIO_FRAMES * 2];
+static int       s_audio_filled;   /* 本帧已生成的立体声帧数 */
 static uint32_t  s_rom_crc;
 
 /* 条带回调 —— 跑在**核 1** 上。把 8 位索引缓冲的可见区域最近邻放大到
@@ -207,6 +242,13 @@ uint8_t *osd_gfx_framebuffer(int width, int height)
         s_draw.w = width;
         s_draw.h = height;
     }
+    /* 顺着光栅推进取一段采样，见文件头。取够本帧的量就不再取，剩下的
+     * （render_lines 调用次数不足时）由 osd_vsync() 补齐。 */
+    if (s_audio_filled + PCE_AUDIO_CHUNK <= PCE_AUDIO_FRAMES) {
+        psg_update(s_audio + (size_t)s_audio_filled * 2, PCE_AUDIO_CHUNK, 0xFF);
+        s_audio_filled += PCE_AUDIO_CHUNK;
+    }
+
     /* 返回 NULL，gfx.c 的 render_lines() 立刻 return，整帧的图块 + 精灵
      * 绘制全部省掉；h6280 和 PSG 不受影响，照常推进。 */
     return s_skip_frame ? NULL : s_draw.pixels;
@@ -271,12 +313,16 @@ void osd_vsync(void)
         display_wait_idle();
     }
 
-    /* 音频：分段调用保证 DDA 通道的近似精度，见 PCE_AUDIO_CHUNKS 注释。 */
-    for (int i = 0; i < PCE_AUDIO_CHUNKS; i++) {
-        psg_update(s_audio + (size_t)i * PCE_AUDIO_CHUNK * 2,
-                   PCE_AUDIO_CHUNK, 0xFF);
+    /* 补齐本帧剩余的采样后整包提交。render_lines() 每帧调多少次由 VDC 的
+     * 显示行数决定，不保证正好凑满，所以这里兜底。 */
+    while (s_audio_filled < PCE_AUDIO_FRAMES) {
+        int n = PCE_AUDIO_FRAMES - s_audio_filled;
+        if (n > PCE_AUDIO_CHUNK) n = PCE_AUDIO_CHUNK;
+        psg_update(s_audio + (size_t)s_audio_filled * 2, n, 0xFF);
+        s_audio_filled += n;
     }
     audio_output_submit_stereo(s_audio, PCE_AUDIO_FRAMES);
+    s_audio_filled = 0;
 
     /* 每秒自报一次，格式对齐 nes_emu.c 那行。emu_us 量的是「上一次 vsync
      * 返回到这一次进来」的时间，也就是核 0 真正花在模拟上的部分；单缓冲时
@@ -416,7 +462,7 @@ esp_err_t pce_emu_run(const rom_store_entry_t *entry)
     memset(scratch, 0, PCE_FB_BYTES);
     display_stream_sync(black_strip, NULL);
 
-    if (InitPCE(AUDIO_OUTPUT_SAMPLE_RATE, true) != 0) {
+    if (InitPCE(PCE_AUDIO_RATE, true) != 0) {
         ESP_LOGE(TAG, "InitPCE 失败");
         rom_store_image_release(&image);
         free_framebuffers();
@@ -445,9 +491,12 @@ esp_err_t pce_emu_run(const rom_store_entry_t *entry)
         return ESP_ERR_NO_MEM;
     }
 
-    if (audio_output_init(AUDIO_OUTPUT_SAMPLE_RATE) != ESP_OK) {
-        ESP_LOGW(TAG, "音频没起来，静音继续");
-    }
+    /* 22080 != 开机流程留下的 24000，所以 audio_output_init() 会走
+     * 「采样率切换」分支，真正停掉旧通道再按 PCE 的速率重建。 */
+    esp_err_t aerr = audio_output_init(PCE_AUDIO_RATE);
+    ESP_LOGI(TAG, "audio_output_init(%d) -> %s，当前音量 %d%%",
+             PCE_AUDIO_RATE, esp_err_to_name(aerr), audio_output_get_volume());
+    if (aerr != ESP_OK) ESP_LOGW(TAG, "音频没起来，静音继续");
 
     ESP_LOGI(TAG, "PC Engine 启动：%s，ROM CRC %08lx，%s，内部 RAM 余 %u KB",
              entry->name, (unsigned long)s_rom_crc,
