@@ -240,15 +240,17 @@
  * 过「没法再用色相区分五个系统」——现在可以了。
  *
  * 选色对着实机：NES 红（红白机）、SNES 紫（欧版手柄按键）、GB 绿（DMG
- * 屏）、GBC 青（初代 teal 配色）、MD 蓝（SEGA logo）。ZIP 是「还没识别出
- * 平台」的临时分类，给它第六个色相会假装它是个真平台，所以用无色相的
- * DARK4。 */
+ * 屏）、GBC 青（初代 teal 配色）、MD 蓝（SEGA logo）、PCE 橙（TurboGrafx-16
+ * 的橙色标识）。六个平台六个色相，faded 那组正好还剩一个黄没用上。
+ *
+ * 橙色和开机模式选择页的 GAME 卡片同色 —— 那是两个页面，不会同屏出现，
+ * 和 MD 蓝跟 WORDS 卡片同色是一个情况。 */
 #define C_SYS_NES       C_GVB_FADED_RED
 #define C_SYS_GB        C_GVB_FADED_GREEN
 #define C_SYS_GBC       C_GVB_FADED_AQUA
 #define C_SYS_SNES      C_GVB_FADED_PURPLE
 #define C_SYS_GENESIS   C_GVB_FADED_BLUE
-#define C_SYS_ZIP       C_GVB_DARK4
+#define C_SYS_PCE       C_GVB_FADED_ORANGE
 
 /* 初始化 SPI + 面板 + 背光，分配两块可覆盖整屏宽度的条带缓冲，
  * 并在核 1 上起一个推屏任务。 */

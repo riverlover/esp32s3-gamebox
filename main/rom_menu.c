@@ -63,7 +63,8 @@ static const char *TAG = "menu";
 #define CARD_H         48
 #define CARD_Y         35
 
-/* 五个平台；无法从目录名推断平台的 ZIP 临时放第六类，选中后再识别。 */
+/* 六个平台，正好填满平台页的 2 列 x 3 行卡片网格。ZIP 不再单列一类
+ * （见 rom_store.h 的 ROM_SYSTEM_LAST 注释）。 */
 #define SYSTEM_COUNT   6
 
 #define POLL_MS     16      /* 约 60 Hz，和游戏帧率一个量级 */
@@ -101,11 +102,11 @@ typedef struct {
 
 static const char *system_name(rom_system_t system)
 {
-    if (system == ROM_SYSTEM_ZIP) return "ZIP";
     if (system == ROM_SYSTEM_SNES) return "SNES";
     if (system == ROM_SYSTEM_GENESIS) return "MD";
     if (system == ROM_SYSTEM_GBC) return "GBC";
     if (system == ROM_SYSTEM_GB) return "GB";
+    if (system == ROM_SYSTEM_PCE) return "PCE";
     return "NES";
 }
 
@@ -119,7 +120,7 @@ static uint16_t system_color(rom_system_t system)
     case ROM_SYSTEM_GBC:     return C_SYS_GBC;
     case ROM_SYSTEM_SNES:    return C_SYS_SNES;
     case ROM_SYSTEM_GENESIS: return C_SYS_GENESIS;
-    case ROM_SYSTEM_ZIP:     return C_SYS_ZIP;
+    case ROM_SYSTEM_PCE:     return C_SYS_PCE;
     default:                 return C_SYS_NES;
     }
 }

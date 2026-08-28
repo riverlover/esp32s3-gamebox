@@ -508,7 +508,7 @@ NES 画面对不上的组合），以及 `display.c` 的 `BAND_LINES`（最好�
 `LICENSE`。选 GPL v2 是被约束出来的：`main/` 链接 GPLv2-only 的 nofrendo，
 再宽松的选择都会让合并作品不合规。
 
-`components/` 下的四个模拟器核心各自保持上游许可，**没有被本项目重新授权**：
+`components/` 下的五个模拟器核心各自保持上游许可，**没有被本项目重新授权**：
 
 | 组件 | 上游 | 许可 | 备注 |
 |---|---|---|---|
@@ -516,6 +516,7 @@ NES 画面对不上的组合），以及 `display.c` 的 `BAND_LINES`（最好�
 | `gnuboy/` | retro-go | `COPYING` 是 GPL v2 | ⚠ 源文件**完全没有许可头**，只能靠 COPYING 推定 |
 | `snes9x/` | retro-go → libretro/snes9x2005 | `src/LICENSE` 是拼接的：前半 ndssfc 为 GPL v2+，后半是 Snes9x 自有许可 | 见下 |
 | `gwenesis/` | retro-go | 目录 `LICENSE` 是 **AGPL v3** | ⚠ 各源码文件头写的是 **GPL v3 or later**，与目录 LICENSE 不一致 |
+| `pce-go/` | retro-go → [HuExpress](https://github.com/kallisti5/huexpress) → Hu-Go! → BERO 的 PCE 模拟器 | `COPYING` 是 GPL v2 | ⚠ 和 gnuboy 一样，13 个源文件**完全没有许可头**，只能靠 COPYING 推定。作者链条见 `CREDITS` |
 
 菜单里的 8×16 半角英文和 16×16 全角中文都来自 GNU Unifont 17.0.04，字高和
 基线一致。该字体采用 SIL OFL 1.1，或 GPL v2+ 带字体嵌入例外，没有许可问题。
@@ -536,6 +537,9 @@ NES 画面对不上的组合），以及 `display.c` 的 `BAND_LINES`（最好�
 2. **GPLv2-only 和 GPLv3/AGPLv3 不能合并。** nofrendo 的源文件写死 version 2、
    没有 or later；gwenesis 是 GPL v3+ / AGPL v3。**就算删掉 snes9x，这个组合
    仍然不合规。**
+
+   加入 pce-go 不改变这个结论：它是 GPL v2，和 nofrendo/gnuboy 同一阵营，
+   冲突的仍然是 snes9x 和 gwenesis 那两条。
 
 加上上表里三处上游元数据自相矛盾（nofrendo 头 vs COPYING、gnuboy 没有头、
 gwenesis 目录 vs 头），每一条都得先定性才谈得上发布二进制。

@@ -24,6 +24,7 @@
 #include "input_gamepad.h"
 #include "nofrendo.h"
 #include "nes_emu.h"
+#include "pce_emu.h"
 #include "gbc_emu.h"
 #include "snes_emu.h"
 #include "genesis_emu.h"
@@ -47,7 +48,7 @@ static const char *TAG = "main";
  * 非零走 overclock_apply()，档位范围 [-8, 8]，实测主频打印在串口日志的
  * "overclock" tag 下。先从这个值开始测，稳定的话再往上加、不稳就往下退——
  * 一次只改这一个数，配合 nes_emu.c 每秒自报的 "CPU 余量" 那行看效果。 */
-#define OVERCLOCK_LEVEL 0
+#define OVERCLOCK_LEVEL 4
 
 static void print_board_info(void)
 {
@@ -552,6 +553,7 @@ void app_main(void)
     esp_err_t run_err = system == ROM_SYSTEM_NES     ? nes_emu_run(run_entry)
                       : system == ROM_SYSTEM_SNES    ? snes_emu_run(run_entry)
                       : system == ROM_SYSTEM_GENESIS ? genesis_emu_run(run_entry)
+                      : system == ROM_SYSTEM_PCE     ? pce_emu_run(run_entry)
                                                      : gbc_emu_run(run_entry);
     if (run_err != ESP_OK) {
         ESP_LOGE(TAG, "模拟器启动失败");

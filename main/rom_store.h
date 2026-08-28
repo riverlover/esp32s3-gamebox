@@ -29,12 +29,20 @@ typedef enum {
     ROM_SYSTEM_GBC  = 3,
     ROM_SYSTEM_SNES = 4,
     ROM_SYSTEM_GENESIS = 5,
-    ROM_SYSTEM_ZIP = 6,       /* 开机不检查且目录无法推断平台的 ZIP */
+    ROM_SYSTEM_PCE = 6,
 } rom_system_t;
+
+/* 范围校验用。加平台时改这里，别在别处写死数字。
+ *
+ * 曾经还有个 ROM_SYSTEM_ZIP = 6 表示「目录名推断不出平台的 ZIP」，它会在
+ * 菜单里占一格「平台」卡片，但它不是平台，是扫描没认出来的待定桶。现在扫描
+ * 阶段就把这种 ZIP 读中央目录认掉（见 rom_store.c 的 add_zip_by_content），
+ * 认不出来的直接不收录 —— 反正也跑不起来。 */
+#define ROM_SYSTEM_LAST ROM_SYSTEM_PCE
 
 typedef enum {
     ROM_STORAGE_FILE = 0,
-    ROM_STORAGE_ZIP_PENDING,  /* 只收了外层文件名，选择后才读 ZIP 目录 */
+    ROM_STORAGE_ZIP_PENDING,  /* 目录名已说明平台，选择后才读 ZIP 目录 */
     ROM_STORAGE_ZIP_STORE,
     ROM_STORAGE_ZIP_DEFLATE,
 } rom_storage_t;

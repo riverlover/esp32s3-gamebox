@@ -52,7 +52,7 @@ idf.py flash-word-audio                                   # 只在教材词表/�
 | `SD_SELFTEST`（默认 0） | `main/main.c` | TF 卡自检：列根目录 + 写读校验，只走串口。**换卡或改接线时打开**，慢卡上要多花两秒 |
 | `SD_BENCHMARK`（默认 0） | `main/sd_card.c` | 扇区读基准，量这张卡的命令固定开销和吞吐。判读方法和本机实测值见那个函数的注释 |
 | `SCAN_PROFILE`（默认 0） | `main/rom_store.c` | 扫描分阶段计时（readdir / stat），定位扫描慢在哪 |
-| `OVERCLOCK_LEVEL`（默认 0，关闭） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过 |
+| `OVERCLOCK_LEVEL`（**默认 4，已开启**） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过。2026-08-28 为 PC Engine 把默认值从 0 改成 4：实画帧 12~18 → 20~28，其余四个核心一并受益，且一个字节内存都不花。想回出厂主频把这个宏改回 0 |
 
 开机画面（`main.c`）现在会停下来问 GAME/WORDS/SETTINGS：WORDS 进入苏州小学译林版
 三至六年级上/下册选择，再选择 Unit 1～8；每册进度按教材版本独立保存；SETTINGS
@@ -105,7 +105,7 @@ Controller Test 集中在 SETTINGS，选定游戏后进入对应模拟器（不�
 - 条带越少越快：每条带约 122 µs 固定开销，串行叠加在总线时间上（实测数据见
   `display.c` 文件头和 `docs/hardware.md` §7）。
 
-### 菜单画布 288×224，四款模拟器铺满 320×240 面板
+### 菜单画布 288×224，五款模拟器铺满 320×240 面板
 
 `DISP_FB_W/H` 是画布，`DISP_W/H` 是面板，画布居中，四周黑边由 `display_init()`
 开机清一次、之后再不碰。288 = 256×9/8，是为了修 NES 的 8:7 像素宽高比——这段历史
@@ -122,13 +122,16 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
 只作为旧格式工具保留，不再接入构建。
 
 - 卡上随便怎么摆。`rom_store.c` 从 `/sd` 递归扫描（最多 4 层），认这些扩展名：
-  `.nes .gb .gbc .sfc .smc .md .bin .zip`。前缀是 `.` / `_` / `removed` 的目录整棵跳过，
+  `.nes .gb .gbc .sfc .smc .md .bin .pce .sgx .zip`。前缀是 `.` / `_` / `removed` 的目录整棵跳过，
   `System Volume Information` 也跳过。RAR / 7z 等其他压缩格式仍需先在电脑上解开。
-- 裸 ROM 的平台不看目录，只按扩展名定。ZIP 为保证开机速度，扫描时不 `stat`、不
-  `open`、不读内容：路径含 `nes/gb/gbc/snes/md` 时先归进对应平台，否则临时归到
-  ZIP 分类。用户选中后才解析 ZIP，取第一个支持的 ROM。支持普通单卷 ZIP 的
+- 裸 ROM 的平台不看目录，只按扩展名定。ZIP 为保证开机速度，路径含
+  `nes/gb/gbc/snes/md/pce` 时不 `stat`、不 `open`、不读内容，直接归进对应平台，
+  选中后才解析、取第一个支持的 ROM。**路径推断不出平台的 ZIP 才在扫描期读一次
+  中央目录**认平台（`add_zip_by_content`），认不出来的直接不收录。以前这种 ZIP
+  会落进一个叫「ZIP」的分类占一格平台卡片，那不是平台、是「还没认出来」，
+  已经去掉。支持普通单卷 ZIP 的
   store(0) / deflate(8)，不支持加密、ZIP64 和多卷。仓库约定目录仍是
-  `/sd/roms/{nes,gb,gbc,snes,md}/`。
+  `/sd/roms/{nes,gb,gbc,snes,md,pce}/`。
 - ⚠️ **扫描裸 ROM 时一个文件都不打开**，平台只按扩展名定、大小只靠 `stat()`。这是实测
   逼出来的：SD 命令的固定开销远大于传输字节数（本机那张 2 GB 老卡每条命令要
   40 ms），原来每个文件都 open+读头+seek，39 个游戏扫 14 秒；改成纯 readdir+stat
@@ -176,7 +179,7 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
   `neutral_*` 不是深浅备选，是给两个主题用的：light 主题取 `faded_*`。
 - **语义层 `C_UI_*` / `C_SYS_*`** —— 面（BG/PANEL/PANEL_ALT/LINE/EDGE）、
   字（FG/FG_DIM/FG_FAINT/FG_INV/FG_INV_DIM）、选中态（SEL/SEL_EDGE）、
-  状态（OK/BAD/WARN/INFO/GOLD/BAR）、五个平台各自的色相（`C_SYS_NES` 等，
+  状态（OK/BAD/WARN/INFO/GOLD/BAR）、六个平台各自的色相（`C_SYS_NES` 等，
   splash 的平台标签和 rom_menu 平台卡片的色条共用）。
 
 ⚠ **画界面只用语义层**，别直接摸 `C_GVB_*`，更不要自己 `RGB565()` 一个新色。
@@ -204,10 +207,11 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
 `-O3` 是性能关键。
 
 ⚠️ **本仓库只分发源码，不分发构建产物（`.bin`），这是有意的许可决定。**
-`main/` 是 GPL v2（根 `LICENSE`），四个核心各自保持上游许可。链接出来的固件
+`main/` 是 GPL v2（根 `LICENSE`），五个核心各自保持上游许可。链接出来的固件
 二进制有两处不可回避的不兼容：Snes9x 的「仅限非商业」附加限制与 GPL 冲突
 （注意方向 —— Snes9x 本身允许非商业分发，是 GPL 不许附加限制）；nofrendo 是
 GPLv2-**only**（源文件无 or later）而 gwenesis 是 GPL v3+/AGPL v3，两者不能合并。
+（pce-go 是 GPL v2，和 nofrendo/gnuboy 同阵营，不改变这个结论。）
 所以**不要往仓库里提交 `.bin`/`.elf`，也不要加发布二进制的 CI**。
 完整推导和三处上游元数据矛盾见 `README.md` 的「授权」一节。
 

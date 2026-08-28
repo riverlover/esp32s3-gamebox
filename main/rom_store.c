@@ -95,13 +95,18 @@ static int     s_n_stat;
 #define SNES_HIROM_HEADER 0xFFC0
 #define GENESIS_ROM_MIN_SIZE 0x200
 
+/* pce-go 的 LoadCard() 自己就拒收小于 0x2000 的数据（一个 bank）。 */
+#define PCE_ROM_MIN_SIZE  0x2000
+
 /* 持久目录只缓存扫描期能得到的元数据，不缓存任何 ROM 内容。格式故意不用
  * rom_store_entry_t：里面有指针和 size_t，直接落盘会绑定本次地址和 ABI。 */
 #define ROM_INDEX_PATH        SD_MOUNT_POINT "/.gamebox-rom-index"
 #define ROM_INDEX_TEMP_PATH   SD_MOUNT_POINT "/.gamebox-rom-index.tmp"
 #define ROM_INDEX_BACKUP_PATH SD_MOUNT_POINT "/.gamebox-rom-index.bak"
 #define ROM_INDEX_MAGIC       UINT32_C(0x58494247) /* 小端文件里是 "GBIX" */
-#define ROM_INDEX_VERSION     1
+/* v2：system 枚举里 6 从 ZIP 改成 PCE，且新增了扫描期已解析的 ZIP 记录。
+ * 不涨版本的话，旧缓存里那些 system==6 的散装 ZIP 会被静默当成 PC Engine。 */
+#define ROM_INDEX_VERSION     2
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -256,24 +261,45 @@ static const char *gb_unsupported_mapper(uint8_t cart_type)
 }
 
 /* 内存里的完整 ROM 再验一次头。装载完调用，挡住「扫描时看着像、读进来是别的」
- * （文件在扫描后被换掉、读盘出错但 fread 没报错之类）。 */
+ * （文件在扫描后被换掉、读盘出错但 fread 没报错之类）。
+ *
+ * ⚠ 用 switch 而且**故意不写 default**：这样漏掉一个平台是编译错误
+ * （`-Wall -Werror=all` 里的 -Wswitch），不是运行时才发现。
+ * 加 PC Engine 时就踩过：`.pce` 加进了 classify()，这里却没加分支，于是
+ * 所有 PCE ROM 掉进当时那条兜底的 GB 分支去比对任天堂 logo，一律在
+ * 「校验 ROM」这一步（进度 98%）失败。 */
 static bool rom_header_ok(rom_system_t system, const uint8_t *rom, size_t size)
 {
     static const uint8_t gb_logo_head[4] = {0xCE, 0xED, 0x66, 0x66};
 
-    if (system == ROM_SYSTEM_NES) {
+    switch (system) {
+    case ROM_SYSTEM_NES:
         return size >= NES_ROM_MIN_SIZE && memcmp(rom, "NES\x1a", 4) == 0;
-    }
-    if (system == ROM_SYSTEM_SNES) {
+
+    case ROM_SYSTEM_SNES:
         if (size >= SNES_LOROM_HEADER + 0x20 &&
             snes_header_ok(rom + SNES_LOROM_HEADER)) return true;
         return size >= SNES_HIROM_HEADER + 0x20 &&
                snes_header_ok(rom + SNES_HIROM_HEADER);
-    }
-    if (system == ROM_SYSTEM_GENESIS) {
+
+    case ROM_SYSTEM_GENESIS:
         return size >= GENESIS_ROM_MIN_SIZE && memcmp(rom + 0x100, "SEGA", 4) == 0;
+
+    case ROM_SYSTEM_GB:
+    case ROM_SYSTEM_GBC:
+        return size >= 0x150 && memcmp(rom + 0x104, gb_logo_head, 4) == 0;
+
+    case ROM_SYSTEM_PCE:
+        /* HuCard 没有魔数、没有厂商 logo、没有固定入口 —— 真的没有任何
+         * 可验的东西，所以这里只能验大小。剩下的交给 pce-go 的 LoadCard()：
+         * 它自己判大小范围，并用 ROM_DATA[0x1FFF] < 0xE0 认 US 加密卡带。
+         *
+         * 512 字节拷贝机头也不在这里剥：LoadCard() 的 `size & 0x1fff` 会
+         * 自己算出偏移（HuCard 容量都是 0x2000 的整数倍），我们把整个文件
+         * 原样交过去就行，别学 SNES 那样先剥。 */
+        return size >= PCE_ROM_MIN_SIZE;
     }
-    return size >= 0x150 && memcmp(rom + 0x104, gb_logo_head, 4) == 0;
+    return false;
 }
 
 /* ---------------- 扫描 ---------------- */
@@ -376,6 +402,13 @@ static bool classify(const char *ext, size_t file_size,
         *system = ROM_SYSTEM_GENESIS;
         return file_size >= GENESIS_ROM_MIN_SIZE;
     }
+    /* .sgx 是 SuperGrafx 卡带。pce-go 不模拟 SuperGrafx 的第二个 VDC，
+     * 纯 SGX 游戏（只有 5 个）跑不了；但 .sgx 扩展名也常被用来装普通
+     * HuCard，所以照收，跑不起来由用户自己发现，和 .bin 一个待遇。 */
+    if (ext_is(ext, ".pce") || ext_is(ext, ".sgx")) {
+        *system = ROM_SYSTEM_PCE;
+        return file_size >= PCE_ROM_MIN_SIZE;
+    }
     return false;
 }
 
@@ -396,8 +429,12 @@ static bool path_segment_is(const char *segment, size_t len, const char *want)
     return strlen(want) == len && strncasecmp(segment, want, len) == 0;
 }
 
-/* 开机不打开 ZIP。按仓库推荐的 /roms/{nes,gb,gbc,snes,md}/ 目录名先放进
- * 对应平台；不按这个目录摆也能显示，只是先放 ZIP 分类，选中后再认平台。 */
+/* 按仓库推荐的 /roms/{nes,gb,gbc,snes,md,pce}/ 目录名推断 ZIP 的平台。
+ * 命中就走「不 stat 不 open」的快路径，选中后才读 ZIP 目录。
+ *
+ * 返回 0 表示路径看不出平台 —— 这种才轮到 add_zip_by_content() 去开文件。
+ * 0 不是 rom_system_t 的合法取值，故意的：让漏判的地方在别处炸出来，
+ * 而不是悄悄归进某个平台。 */
 static rom_system_t zip_system_from_path(const char *path)
 {
     const char *p = path;
@@ -412,9 +449,12 @@ static rom_system_t zip_system_from_path(const char *path)
         if (path_segment_is(p, len, "snes")) return ROM_SYSTEM_SNES;
         if (path_segment_is(p, len, "md") || path_segment_is(p, len, "genesis") ||
             path_segment_is(p, len, "megadrive")) return ROM_SYSTEM_GENESIS;
+        if (path_segment_is(p, len, "pce") || path_segment_is(p, len, "tg16") ||
+            path_segment_is(p, len, "turbografx") ||
+            path_segment_is(p, len, "pcengine")) return ROM_SYSTEM_PCE;
         p = end + 1;
     }
-    return ROM_SYSTEM_ZIP;
+    return (rom_system_t)0;
 }
 
 typedef struct {
@@ -430,7 +470,9 @@ static bool resolve_zip_member(const rom_zip_member_t *member, void *opaque)
     if (!ext || (fname[0] == '.' || fname[0] == '_')) return true;
     if (!ext_is(ext, ".nes") && !ext_is(ext, ".gb") && !ext_is(ext, ".gbc") &&
         !ext_is(ext, ".sfc") && !ext_is(ext, ".smc") && !ext_is(ext, ".md") &&
-        !ext_is(ext, ".bin")) return true;
+        !ext_is(ext, ".bin") && !ext_is(ext, ".pce") && !ext_is(ext, ".sgx")) {
+        return true;
+    }
     if ((member->flags & 1u) ||
         (member->method != ROM_ZIP_METHOD_STORE &&
          member->method != ROM_ZIP_METHOD_DEFLATE) ||
@@ -455,6 +497,37 @@ static bool resolve_zip_member(const rom_zip_member_t *member, void *opaque)
     return false;  /* 一个 ZIP 只启动第一个可识别 ROM */
 }
 
+/* 路径推断不出平台的 ZIP：在扫描阶段就读一次中央目录把平台认出来。
+ *
+ * 这是唯一会在扫描期打开文件的分支，和文件头「扫描裸 ROM 时一个文件都不
+ * 打开」那条并不矛盾 —— 代价只落在**散装 ZIP**这个子集上：规规矩矩放在
+ * /roms/{nes,gb,...}/ 下面的 ZIP 仍然走 zip_system_from_path() 的快路径，
+ * 一次 open 都不做。结果照常写进 .gamebox-rom-index，所以这笔开销只在
+ * 首次扫描（或按 SELECT 强制刷新）付一次。
+ *
+ * 以前这种 ZIP 会落进一个叫「ZIP」的分类，在平台页占一格卡片。那不是平台，
+ * 是「还没认出来」，所以现在当场认掉；认不出来的直接不收录 —— 里面没有能
+ * 跑的 ROM，收录了也只是让用户选中之后才看到报错。 */
+static void add_zip_by_content(const char *path, const char *fname, const char *ext)
+{
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size <= 0) return;
+
+    rom_store_entry_t probe = {0};
+    zip_resolve_ctx_t ctx = { .resolved = &probe };
+    if (rom_zip_scan(path, (size_t)st.st_size, resolve_zip_member, &ctx) != ESP_OK ||
+        !ctx.found) {
+        ESP_LOGW(TAG, "%s 里没有认得的 ROM，跳过", fname);
+        return;
+    }
+
+    char namebuf[ROM_STORE_NAME_LEN];
+    display_name(fname, ext, namebuf, sizeof(namebuf));
+    append_entry(namebuf, path, probe.system, probe.file_offset, probe.size,
+                 probe.storage, probe.archive_offset, probe.stored_size,
+                 probe.archive_crc32);
+}
+
 static void try_add(const char *path, const char *fname)
 {
     const char *ext = strrchr(fname, '.');
@@ -467,14 +540,19 @@ static void try_add(const char *path, const char *fname)
     }
     if (!is_zip && !ext_is(ext, ".nes") && !ext_is(ext, ".gb") && !ext_is(ext, ".gbc") &&
         !ext_is(ext, ".sfc") && !ext_is(ext, ".smc") && !ext_is(ext, ".md") &&
-        !ext_is(ext, ".bin")) {
+        !ext_is(ext, ".bin") && !ext_is(ext, ".pce") && !ext_is(ext, ".sgx")) {
         return;     /* 卡上本来就有别的文件，不吭声 */
     }
 
     if (is_zip) {
-        /* 用户要求开机快速显示：不 stat、不 open、不读 ZIP 内容。 */
-        add_entry(path, fname, ext, zip_system_from_path(path), 0, 0,
-                  ROM_STORAGE_ZIP_PENDING, NULL);
+        rom_system_t hint = zip_system_from_path(path);
+        if (hint) {
+            /* 目录名已经说明平台：不 stat、不 open、不读内容，开机最快。 */
+            add_entry(path, fname, ext, hint, 0, 0,
+                      ROM_STORAGE_ZIP_PENDING, NULL);
+        } else {
+            add_zip_by_content(path, fname, ext);
+        }
         return;
     }
 
@@ -653,12 +731,12 @@ static bool cache_record_valid(const rom_index_record_t *rec,
         rec->path_len >= ROM_STORE_PATH_LEN ||
         memchr(name, '\0', rec->name_len) || memchr(path, '\0', rec->path_len) ||
         memcmp(path, SD_MOUNT_POINT "/", strlen(SD_MOUNT_POINT) + 1) != 0 ||
-        rec->system < ROM_SYSTEM_NES || rec->system > ROM_SYSTEM_ZIP) {
+        rec->system < ROM_SYSTEM_NES || rec->system > ROM_SYSTEM_LAST) {
         return false;
     }
 
     if (rec->storage == ROM_STORAGE_FILE) {
-        return rec->system != ROM_SYSTEM_ZIP && rec->size > 0 &&
+        return rec->size > 0 &&
                rec->size <= ROM_MAX_SIZE && rec->file_offset <= 512 &&
                rec->archive_offset == 0 && rec->stored_size == 0 &&
                rec->archive_crc32 == 0;
@@ -668,7 +746,15 @@ static bool cache_record_valid(const rom_index_record_t *rec,
                rec->archive_offset == 0 && rec->stored_size == 0 &&
                rec->archive_crc32 == 0;
     }
-    return false; /* 扫描目录里永远不会存已经按需解析过的 ZIP */
+    /* 散装 ZIP 在扫描期就解析掉了（add_zip_by_content），所以缓存里会有
+     * 带完整成员信息的 ZIP 记录。archive_offset 允许为 0：ZIP 的第一个
+     * local header 本来就在偏移 0。 */
+    if (rec->storage == ROM_STORAGE_ZIP_STORE ||
+        rec->storage == ROM_STORAGE_ZIP_DEFLATE) {
+        return rec->size > 0 && rec->size <= ROM_MAX_SIZE &&
+               rec->file_offset <= 512 && rec->stored_size > 0;
+    }
+    return false;
 }
 
 static bool load_index_file(const char *path)

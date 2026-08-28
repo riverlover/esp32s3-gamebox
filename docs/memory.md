@@ -142,7 +142,63 @@ Genesis、释放 NES 预留内存后才申请，仍放片内。**只改 M68K RAM
 
 所以 GB/GBC 明确占用的 PSRAM 下限约为 90 KiB；实际值还要加卡带 RAM 和普通 heap。
 
-### 5.4 SNES，`SNES_MEM_PROFILE=0`
+### 5.4 PC Engine
+
+| 对象 | 大小 | 位置 | 原因 |
+|---|---:|---|---|
+| 368×242 的 8 位索引帧（gfx.c 画） | 89,088 B ≈ 87 KiB | **强制片内** | 逐扫描线读写的最热内存；参照 NES vidbuf 放 PSRAM 时 PPU 从 2 ms 涨到 8.5 ms 的实测 |
+| 同尺寸 PSRAM 镜像（核 1 读） | 89,088 B ≈ 87 KiB | 强制 PSRAM | 每帧 memcpy 过去，只被顺序读一遍 |
+| `PCE.VRAM` | 64 KiB | 通常 PSRAM | 32768 个 16 位字 |
+| `PCE.RAM` | 8 KiB | 通常优先片内 | 不大于 16 KiB 阈值 |
+| `PCE.ExRAM` | 32 KiB | 通常 PSRAM | 只有卡带自带 RAM 的游戏才分配（Populous） |
+| `MemoryMapR/W` | 2 × 1 KiB | 通常优先片内 | 各 256 个 bank 指针 |
+| ROM | 128 KiB ~ 2.5 MiB | PSRAM | 由 `rom_store_load()` 读入，之后所有权移交 pce-go |
+| 调色板 + 音频缓冲 | 512 B + 1,600 B | 片内静态 | `pce_emu.c` 的 `s_palette` / `s_audio` |
+
+帧缓冲多分配的那 32 B 是买断上游的边界擦写，推导见 `main/pce_emu.c` 文件头。
+
+**为什么不是两块片内缓冲**：试过，凑不出来。分配掉第一块 87 KiB 之后片内
+还剩 129 KiB，但**最大连续块只有 40 KiB** —— 长期存活的分配（推屏条带、任务栈、
+SD/I2S 驱动）把 heap_init 报告的那个 230 KiB 区切碎了。把帧缓冲挪到
+`rom_store_load()` **之前**分配也没用（那样至少能让读盘借走这块 87 KiB 当
+DMA 中转，见 `pce_emu.c`），仍然只有一块。
+
+所以改成「片内画 + PSRAM 镜像」：每帧画完 `memcpy` 87 KiB 到 PSRAM 再交给核 1，
+核 0 立刻接着画下一帧。本机实测 `1943改`（512 KiB HuCard）：
+
+| 结构 | 帧率 | 核 0 每帧 |
+|---|---:|---:|
+| 单缓冲 + 同步推屏 | 26～28 fps | 37.4 ms（含等核 1 推完的约 17 ms） |
+| 片内 + PSRAM 镜像 | 38～41 fps | 25.5 ms |
+
+**渲染满帧到不了 60 fps**，所以上了自适应跳帧 —— 这不是为了画面，是**音频的硬
+约束**：`osd_vsync()` 每次固定产 400 个采样，I2S 固定按 24000 Hz 消费，两者对得上
+的唯一条件是每秒正好调 60 次 vsync。渲染满帧时只有 38~41 次，每秒少喂 1/3 采样，
+队列反复见底，听感是持续破音。跳帧后模拟稳定 59~60 Hz，实画 12~18 帧/秒。
+
+裸 CPU 模拟约 13.9 ms/帧，已占 16.67 ms 预算的 83%，渲染一帧另需约 9.6 ms，
+所以最多只能画约 29% 的帧。上游 retro-go 跑 PCE 同样默认 `frameskip = 1`。
+
+**提升实画帧用的是超频，不是 IRAM。** `OVERCLOCK_LEVEL` 已从 0 改为 4，实画帧
+12~18 → 20~28（轻场景 28~36），片内余量仍是 82 KB，其余四个核心一并受益。
+
+⚠ **h6280 进 IRAM 这条路试过，不能用，别再走一遍。** 用 IDF linker fragment 按目标
+文件重定位（不改上游源码）后，裸模拟降到约 12.0 ms、实画帧 23~31 fps；但它吃掉
+30 KB 片内 SRAM，而 IRAM 和 DRAM 共用片内那块，**实测把 Genesis 打崩**（Golden Axe
+启动即 `StoreProhibited`，撤掉即恢复，做过单变量对照）。崩点是
+`gwenesis_bus.c` 的 `ZRAM` 和 `ym2612.c` 的三张查表：它们都是 `MALLOC_CAP_INTERNAL`
+且**没有 PSRAM 回退**，共 54 KiB，分配失败返回 NULL 后建表时直接写进去。
+`noflash_text`（只搬 .text 不搬 .rodata）省不出来，实测同样 30 KB、同样崩。
+结论：这 30 KB 不能从 Genesis 借，而超频不花内存就拿到了同等收益。
+
+连 PSRAM 镜像都开不出来时退回单缓冲 + 同步推屏；走没走这条退路看串口 `pce` tag
+的启动行，它会打印「PSRAM 镜像」还是「单缓冲」。
+
+⚠ 节流分支里那句 `else vTaskDelay(1)` 不能省。PCE 永远追不上 60 Hz，`sleep_us`
+恒为负，少了这句就一次都不让出核 0，十几秒后开始刷 `task_wdt: IDLE0 (CPU 0)`。
+nes/gbc/genesis 三个核心都有同一条。
+
+### 5.5 SNES，`SNES_MEM_PROFILE=0`
 
 这是当前最依赖 PSRAM 的路径。下表列大块对象；不包含 FreeRTOS/驱动、allocator 元数据、
 小对象和大小随声音核心状态变化的缓冲。
