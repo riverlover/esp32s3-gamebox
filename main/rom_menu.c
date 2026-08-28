@@ -125,6 +125,76 @@ static uint16_t system_color(rom_system_t system)
     }
 }
 
+/* 平台卡片右侧的小图标：画的是**主机/手柄的外形**，不是厂商 logo。
+ * 32x26 的格子，只用矩形和填充，和 main.c 的 boot_draw_icon() 一个路子。
+ *
+ * 卡片 132 宽，「999 GAMES」那行最宽到 x+85，右侧正好剩下这块地方。
+ * 色相跟左边那条色条一致（选中时整卡已经是平台色，改用反白）。 */
+#define ICON_W  32
+#define ICON_H  26
+
+static void draw_system_icon(rom_system_t system, int ix, int iy, uint16_t c)
+{
+    switch (system) {
+    case ROM_SYSTEM_NES:        /* 横手柄：十字 + 两个方键 */
+        display_rect(ix, iy + 5, ICON_W, 16, c);
+        display_fill_rect(ix + 4, iy + 11, 9, 3, c);
+        display_fill_rect(ix + 7, iy + 8, 3, 9, c);
+        display_fill_rect(ix + 21, iy + 11, 4, 4, c);
+        display_fill_rect(ix + 27, iy + 11, 4, 4, c);
+        break;
+
+    case ROM_SYSTEM_SNES:       /* 手柄：十字 + 菱形四键 */
+        display_rect(ix, iy + 4, ICON_W, 18, c);
+        display_fill_rect(ix + 4, iy + 12, 8, 3, c);
+        display_fill_rect(ix + 7, iy + 9, 3, 9, c);
+        display_fill_rect(ix + 24, iy + 8, 3, 3, c);
+        display_fill_rect(ix + 20, iy + 12, 3, 3, c);
+        display_fill_rect(ix + 28, iy + 12, 3, 3, c);
+        display_fill_rect(ix + 24, iy + 16, 3, 3, c);
+        break;
+
+    case ROM_SYSTEM_GB:         /* 竖掌机：小屏 + 竖排按键 */
+        display_rect(ix + 6, iy, 20, ICON_H, c);
+        display_rect(ix + 9, iy + 3, 14, 9, c);
+        display_fill_rect(ix + 9, iy + 18, 6, 2, c);
+        display_fill_rect(ix + 11, iy + 16, 2, 6, c);
+        display_fill_rect(ix + 18, iy + 19, 3, 3, c);
+        display_fill_rect(ix + 22, iy + 16, 3, 3, c);
+        break;
+
+    case ROM_SYSTEM_GBC:        /* 掌机：机身更方、屏幕更大，和 GB 拉开区别 */
+        display_rect(ix + 4, iy, 24, ICON_H, c);
+        display_fill_rect(ix + 7, iy + 3, 18, 11, c);
+        display_fill_rect(ix + 7, iy + 19, 6, 2, c);
+        display_fill_rect(ix + 9, iy + 17, 2, 6, c);
+        display_fill_rect(ix + 18, iy + 20, 3, 3, c);
+        display_fill_rect(ix + 23, iy + 17, 3, 3, c);
+        break;
+
+    case ROM_SYSTEM_GENESIS:    /* 三键手柄：右侧三个键一排 */
+        display_rect(ix, iy + 5, ICON_W, 16, c);
+        display_fill_rect(ix + 4, iy + 11, 9, 3, c);
+        display_fill_rect(ix + 7, iy + 8, 3, 9, c);
+        display_fill_rect(ix + 18, iy + 12, 3, 3, c);
+        display_fill_rect(ix + 23, iy + 12, 3, 3, c);
+        display_fill_rect(ix + 28, iy + 12, 3, 3, c);
+        break;
+
+    case ROM_SYSTEM_PCE:
+        /* 画 HuCard 而不是手柄。第一版画的是小手柄，渲染出来和 NES 那个
+         * 几乎一样 —— 都是横机身 + 十字 + 两个键，只差一点大小，扫一眼分
+         * 不开。PC Engine 最有辨识度的是那张信用卡大小的卡带，外形和其余
+         * 五个完全不撞。 */
+        display_rect(ix + 2, iy + 4, 28, 18, c);
+        display_fill_rect(ix + 5, iy + 7, 3, 12, c);   /* 触点 */
+        display_fill_rect(ix + 10, iy + 7, 3, 12, c);
+        display_fill_rect(ix + 17, iy + 9, 10, 2, c);  /* 标签条 */
+        display_fill_rect(ix + 17, iy + 14, 7, 2, c);
+        break;
+    }
+}
+
 static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
     const draw_args_t *a = ctx;
@@ -162,6 +232,10 @@ static void draw_strip(uint16_t *strip, int y0, int h, void *ctx)
             snprintf(count_text, sizeof(count_text), "%d GAMES", a->counts[i]);
             display_text_16(x + 13, y + 27, count_text,
                             active ? C_UI_FG_INV_DIM : C_UI_FG_DIM);
+
+            draw_system_icon(a->systems[i], x + CARD_W - ICON_W - 6,
+                             y + (CARD_H - ICON_H) / 2,
+                             active ? C_UI_FG_INV : accent);
         }
     } else {
         for (int row = 0; row < a->row_count; row++) {
