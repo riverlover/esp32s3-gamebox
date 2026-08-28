@@ -82,7 +82,36 @@ static int                s_cur_h;       /* 它有多少行 */
 static int                s_cur_w;       /* 本帧画布宽度，也是条带行跨度 */
 static int                s_cur_frame_h; /* 本帧画布总高度 */
 
-static SemaphoreHandle_t  s_band_done;   /* 计数：每条带 DMA 传完 +1 */
+static SemaphoreHandle_t  s_band_done;
+
+/* 等一条带的 DMA 回执。**必须带超时**，不能 portMAX_DELAY。
+ *
+ * 实测过一个偶发死锁：菜单里翻页时推屏任务永远等不到某一次回执，于是不再
+ * 归还 s_idle，菜单跟着阻塞在 display_stream_sync，屏幕停在推了一半的画面
+ * （底部几条带保留旧内容），只能按 RST。整机其余部分是活的 —— 探针任务照
+ * 常输出，也没有任何看门狗告警，因为推屏任务是阻塞不是空转。
+ *
+ * 根因还没定死（往推屏任务里加几个 volatile 写就不复现了，说明窗口很窄）。
+ * 但无论根因是什么，「少收一次回执」都不该让整机瘫痪：超时就放弃本帧、把
+ * 残留回执排空、照常归还 s_idle，代价只是丢一帧。真发生时这里会大声报出来，
+ * 带上条带序号和回执计数 —— 那正是定位根因缺的最后一块数据。 */
+#define BAND_WAIT_MS  200       /* 一条带正常约 2 ms，200 ms 是纯粹的兜底 */
+
+static bool band_wait(int band, int band_count)
+{
+    if (xSemaphoreTake(s_band_done, pdMS_TO_TICKS(BAND_WAIT_MS)) == pdTRUE) {
+        return true;
+    }
+    static uint32_t timeouts;
+    timeouts++;
+    ESP_LOGE(TAG, "等 DMA 回执超时：条带 %d/%d，回执计数 %d，累计 %lu 次，丢弃本帧",
+             band, band_count, (int)uxSemaphoreGetCount(s_band_done),
+             (unsigned long)timeouts);
+    /* 排空可能迟到的回执，让下一帧从干净状态开始。 */
+    while (xSemaphoreTake(s_band_done, 0) == pdTRUE) { }
+    return false;
+}
+   /* 计数：每条带 DMA 传完 +1 */
 static SemaphoreHandle_t  s_submit;      /* 二值：有新帧待推 */
 static SemaphoreHandle_t  s_idle;        /* 二值：推屏任务空闲，可以收新帧 */
 
@@ -111,6 +140,7 @@ static void blit_task(void *arg)
         const int frame_x = s_frame_x;
         const int frame_y = s_frame_y;
         const int band_count = (frame_h + BAND_LINES - 1) / BAND_LINES;
+        bool aborted = false;
 #if DISP_PROFILE
         int64_t push_t0 = esp_timer_get_time();
 #endif
@@ -126,7 +156,7 @@ static void blit_task(void *arg)
              * 实际上 draw_bitmap 内部会等上一条传完才发命令，所以这一步几乎
              * 总是立刻返回。但那是驱动的实现细节，不是契约 —— 显式等一次让
              * 「不会覆写正在 DMA 的缓冲」这件事在本地就能看明白，代价为零。 */
-            if (i >= 2) xSemaphoreTake(s_band_done, portMAX_DELAY);
+            if (i >= 2 && !band_wait(i, band_count)) { aborted = true; break; }
 
             s_cur    = s_strip[i & 1];
             s_cur_y0 = y0;
@@ -142,8 +172,8 @@ static void blit_task(void *arg)
         }
         /* 循环里至多漏收两条（i=0、1 时没等），这里补齐最后的 DMA 回执。 */
         int pending = band_count < 2 ? band_count : 2;
-        for (int i = 0; i < pending; i++) {
-            xSemaphoreTake(s_band_done, portMAX_DELAY);
+        for (int i = 0; !aborted && i < pending; i++) {
+            if (!band_wait(band_count + i, band_count)) break;
         }
 
 #if DISP_PROFILE
