@@ -40,6 +40,7 @@
 #include "input_serial.h"
 #include "input_gamepad.h"
 #include "input_usb.h"
+#include "ui_sound.h"
 #include "nofrendo.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -411,9 +412,11 @@ rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry)
             /* 分类页的上一级就是 GAME/WORDS/SETTINGS 开机页。用独立返回值告诉
              * app_main，不能冒充“没有 ROM”，否则会误启动编译期内置游戏。 */
             if (edge & NES_PAD_B) {
+                ui_sound_back();
                 return ROM_MENU_BACK;
 
             } else if (edge & (NES_PAD_A | NES_PAD_START)) {
+                ui_sound_enter();
                 in_games = true;
                 dirty = true;
 
@@ -447,10 +450,12 @@ rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry)
             int page_count = (c->count + PAGE_ROWS - 1) / PAGE_ROWS;
 
             if (edge & NES_PAD_B) {
+                ui_sound_back();
                 in_games = false;
                 dirty = true;
 
             } else if (edge & (NES_PAD_A | NES_PAD_START)) {
+                ui_sound_enter();
                 int i = nth_of_system(count, c->system, sel[cat]);
                 const rom_store_entry_t *e = i >= 0 ? rom_store_entry(i) : NULL;
                 if (e) {

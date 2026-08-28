@@ -30,6 +30,7 @@
 #include "snes_emu.h"
 #include "genesis_emu.h"
 #include "rom_menu.h"
+#include "ui_sound.h"
 #include "overclock.h"
 #include "sd_card.h"
 #include "word_study.h"
@@ -180,78 +181,10 @@ static void draw_wordmark(int y)
     draw_wordmark_ex(y, NULL);
 }
 
-/* ============ 开机音效 ============
- *
- * 一段自己写的方波上行分解和弦（C-E-G-C），最后一个音带线性衰减。
- * 音色照 GB 那两路脉冲通道的路子走 —— 方波、无滤波、整数分频，所以听感
- * 是同一挂的，但**不是复刻任天堂那段开机音**：那是它家的版权资产，而本仓库
- * 对许可一向较真（见 README 的「授权」一节），不往里塞来源不明的素材。
- *
- * 每个音都带 3 ms 起振和 8 ms 收尾，不加的话方波从零直接跳到峰值会「啪」
- * 一声，比音符本身还响。 */
-typedef struct {
-    int freq_hz;
-    int ms;
-} chime_note_t;
-
-static const chime_note_t CHIME[] = {
-    { 523,  70 },   /* C5 */
-    { 659,  70 },   /* E5 */
-    { 784,  70 },   /* G5 */
-    { 1047, 340 },  /* C6，收尾音，衰减到静音 */
-};
-
-#define CHIME_RATE      AUDIO_OUTPUT_SAMPLE_RATE
-#define CHIME_PEAK      13000          /* 约 40% 满量程，后端还会再乘音量档位 */
-#define CHIME_EDGE_MS   3
-#define CHIME_TAIL_MS   8
-#define CHIME_CHUNK     256            /* 一次提交的立体声帧数 */
-
-static uint32_t chime_total_ms(void)
-{
-    uint32_t ms = 0;
-    for (size_t i = 0; i < sizeof(CHIME) / sizeof(CHIME[0]); i++) ms += CHIME[i].ms;
-    return ms;
-}
-
-/* 按绝对采样下标生成，调用方只要往前推 index 就能分块取，不用保存相位。 */
-static void chime_fill(int16_t *out, size_t frames, uint32_t index)
-{
-    const size_t n_notes = sizeof(CHIME) / sizeof(CHIME[0]);
-
-    for (size_t k = 0; k < frames; k++) {
-        uint32_t n = index + (uint32_t)k;
-        uint32_t t_ms = n * 1000u / CHIME_RATE;
-
-        int note = -1;
-        uint32_t acc = 0;
-        for (size_t i = 0; i < n_notes; i++) {
-            if (t_ms < acc + (uint32_t)CHIME[i].ms) { note = (int)i; break; }
-            acc += (uint32_t)CHIME[i].ms;
-        }
-
-        int16_t v = 0;
-        if (note >= 0) {
-            uint32_t into = t_ms - acc;
-            uint32_t len  = (uint32_t)CHIME[note].ms;
-
-            /* 方波：半周期的采样数用整数除，轻微失准在 8-bit 音色里听不出来。 */
-            uint32_t half = CHIME_RATE / (uint32_t)(CHIME[note].freq_hz * 2);
-            if (half == 0) half = 1;
-            int sign = ((n / half) & 1u) ? 1 : -1;
-
-            int amp = CHIME_PEAK;
-            /* 最后一个音整段线性衰减，前面几个音保持等响。 */
-            if (note == (int)n_notes - 1) amp = (int)((uint32_t)amp * (len - into) / len);
-            if (into < CHIME_EDGE_MS) amp = amp * (int)into / CHIME_EDGE_MS;
-            if (len - into < CHIME_TAIL_MS) amp = amp * (int)(len - into) / CHIME_TAIL_MS;
-
-            v = (int16_t)(sign * amp);
-        }
-        out[k * 2]     = v;
-        out[k * 2 + 1] = v;
-    }
-}
+/* 开机上电音。音符表和方波合成都在 ui_sound.c（菜单提示音共用同一套），
+ * 这里只留按动画帧节奏喂数据的部分 —— 那段和动画循环绑在一起，挪不进通用模块。 */
+#define CHIME_RATE   AUDIO_OUTPUT_SAMPLE_RATE
+#define CHIME_CHUNK  256               /* 一次提交的立体声帧数 */
 
 /* 字标在模式选择页的最终纵坐标。入场动画把字母落到这里，之后原地不动，
  * 所以这个值动画和菜单必须共用，改一处就够。 */
@@ -350,7 +283,8 @@ static void boot_intro(void)
      * AUDIO_QUEUE_FRAMES(4) 个包、约 88 ms，一次性提交剩下的会被直接丢掉
      * （那条接口队列满时丢包并计数，不阻塞）。 */
     bool sound = audio_output_init(CHIME_RATE) == ESP_OK;
-    uint32_t total = chime_total_ms() * CHIME_RATE / 1000;
+    uint32_t total = ui_sound_ms(UI_SOUND_BOOT, UI_SOUND_BOOT_COUNT)
+                   * CHIME_RATE / 1000;
     uint32_t sent = 0;
     int64_t t0 = esp_timer_get_time();
     static int16_t chunk[CHIME_CHUNK * 2];
@@ -365,7 +299,9 @@ static void boot_intro(void)
         while (sent < due) {
             size_t n = due - sent;
             if (n > CHIME_CHUNK) n = CHIME_CHUNK;
-            chime_fill(chunk, n, sent);
+            ui_sound_render(chunk, n, sent, UI_SOUND_BOOT,
+                            UI_SOUND_BOOT_COUNT, CHIME_RATE,
+                            UI_SOUND_BOOT_PEAK, UI_DUTY_50);
             audio_output_submit_stereo(chunk, n);
             sent += (uint32_t)n;
         }
@@ -377,7 +313,9 @@ static void boot_intro(void)
         while (sent < due) {
             size_t n = due - sent;
             if (n > CHIME_CHUNK) n = CHIME_CHUNK;
-            chime_fill(chunk, n, sent);
+            ui_sound_render(chunk, n, sent, UI_SOUND_BOOT,
+                            UI_SOUND_BOOT_COUNT, CHIME_RATE,
+                            UI_SOUND_BOOT_PEAK, UI_DUTY_50);
             audio_output_submit_stereo(chunk, n);
             sent += (uint32_t)n;
         }
@@ -570,6 +508,7 @@ static void settings_menu(bool *refresh_rom_index)
 
         if (edge & NES_PAD_B) {
             if (volume_preview_active) word_audio_shutdown();
+            ui_sound_back();
             return;
         }
 
@@ -600,6 +539,7 @@ static void settings_menu(bool *refresh_rom_index)
             }
         } else if (selected == SETTINGS_TEST &&
                    (edge & (NES_PAD_A | NES_PAD_START))) {
+            ui_sound_enter();
             /* TEST 原来在主页；只在真正进入诊断时才碰 ROM 目录，WORDS 和普通
              * 设置路径仍不会承担 SD 全盘扫描。 */
             if (volume_preview_active) {
@@ -635,6 +575,7 @@ static boot_mode_t boot_menu(void)
             display_stream_sync(boot_menu_strip, &selected);
         }
         if (edge & (NES_PAD_A | NES_PAD_START)) {
+            ui_sound_enter();
             return (boot_mode_t)selected;
         }
     }

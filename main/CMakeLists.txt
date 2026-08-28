@@ -3,7 +3,7 @@
 idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                             "gbc_emu.c" "snes_emu.c" "genesis_emu.c" "pce_emu.c"
                             "game_menu.c"
-                            "rgb_led.c" "audio_output.c"
+                            "rgb_led.c" "audio_output.c" "ui_sound.c"
                             "input_serial.c" "input_gamepad.c" "input_usb.c"
                             "rom_store.c" "rom_zip.c" "rom_menu.c" "loading_screen.c"
                             "overclock.c" "sd_card.c" "word_study.c" "word_study_data.c"
