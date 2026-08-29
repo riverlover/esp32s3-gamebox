@@ -131,6 +131,17 @@ static bool allocate_runtime(void)
     M68K_RAM = heap_caps_malloc(MAX_RAM_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (M68K_RAM) ESP_LOGI(TAG, "内存 M68K RAM %u B -> 内部 RAM", MAX_RAM_SIZE);
 
+    /* Z80 RAM 和 YM2612 三张表共约 54 KiB，都是逐指令/逐样本热数据，不能
+     * 放 PSRAM。必须在 VRAM 之前保住；VRAM 自己已有 PSRAM 回退路径。 */
+    if (!M68K_RAM || !gwenesis_bus_reserve_internal()) {
+        ESP_LOGE(TAG, "Z80/YM2612 片内热数据预留失败");
+        free_runtime();
+        return false;
+    }
+    ESP_LOGI(TAG, "Z80/YM2612 片内热数据已预留，剩余 %u KB，最大连续块 %u KB",
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
+
     VRAM = heap_caps_malloc(VRAM_MAX_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     const char *vram_where = "内部 RAM";
     if (!VRAM) {
@@ -398,8 +409,14 @@ esp_err_t genesis_emu_run(const rom_store_entry_t *entry)
     if (!allocate_runtime()) return ESP_ERR_NO_MEM;
     uint32_t rom_crc = esp_crc32_le(0, s_rom.data, s_rom.size);
 
-    load_cartridge(s_rom.data, s_rom.size);
-    power_on();
+    if (!load_cartridge(s_rom.data, s_rom.size)) {
+        ESP_LOGE(TAG, "Z80/YM2612 片内热数据不可用");
+        return ESP_ERR_NO_MEM;
+    }
+    if (!power_on()) {
+        ESP_LOGE(TAG, "YM2612 初始化失败");
+        return ESP_ERR_NO_MEM;
+    }
     reset_emulation();
 
     bool pal = REG1_PAL;
