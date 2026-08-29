@@ -21,6 +21,7 @@ idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                                 espressif__led_strip  # 板载可寻址 RGB LED
                                 esp_adc         # 摇杆走 ADC1
                                 esp_timer
+                                esp_app_format # 从 app descriptor 读取统一项目版本
                                 nvs_flash       # 单词学习进度，答对/错后跨重启保留
                                 esp_rom        # ZIP DEFLATE 使用 ESP32-S3 ROM 内置 miniz
                                 esp_hw_support # ROM CRC 与存档文件 CRC

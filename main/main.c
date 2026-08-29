@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_chip_info.h"
+#include "esp_app_desc.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -60,6 +61,7 @@ static void print_board_info(void)
     esp_flash_get_size(NULL, &flash);
 
     printf("\n========= ESP32-S3 GAMEBOX =========\n");
+    printf("版本      : v%s\n", esp_app_get_description()->version);
     printf("芯片      : ESP32-S3, %d core(s), rev %d.%d\n",
            info.cores, info.revision / 100, info.revision % 100);
     printf("Flash     : %" PRIu32 " MB\n", flash / (1024 * 1024));
@@ -392,6 +394,11 @@ static void boot_menu_strip(uint16_t *strip, int y0, int h, void *ctx)
     display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_UI_EDGE);
     /* 牌匾本身已经是一条足够重的分隔，原来标题下面那条 hline 再画就多余了。 */
     draw_wordmark(BOOT_WORDMARK_Y);
+    const char *version = esp_app_get_description()->version;
+    int version_w = ((int)strlen(version) + 1) * 6;
+    display_text(DISP_FB_W - 8 - version_w, 5, "v", C_UI_FG_FAINT, 1);
+    display_text(DISP_FB_W - 8 - version_w + 6, 5,
+                 version, C_UI_FG_FAINT, 1);
     boot_text_center_ascii(wordmark_bottom(BOOT_WORDMARK_Y) + 5, "PLAY  LEARN  EXPLORE",
                            C_UI_FG_DIM, 1);
     int choose_w = display_text_width_16("选择模式");
