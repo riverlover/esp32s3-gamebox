@@ -274,3 +274,47 @@ fail_queue:
     s_queue = NULL;
     return err;
 }
+
+bool audio_output_ready(void)
+{
+    return s_queue != NULL;
+}
+
+esp_err_t audio_output_beep(uint16_t freq_hz, uint16_t duration_ms)
+{
+    if (!s_queue || s_sample_rate == 0) return ESP_ERR_INVALID_STATE;
+    if (freq_hz < 100) freq_hz = 100;
+    if (freq_hz > 4000) freq_hz = 4000;
+    if (duration_ms < 20) duration_ms = 20;
+    if (duration_ms > 500) duration_ms = 500;
+
+    /* 半周期采样数；方波足够听清接线是否通，不必上 sinf。 */
+    uint32_t half = s_sample_rate / (2u * (uint32_t)freq_hz);
+    if (half == 0) half = 1;
+    uint32_t period = half * 2;
+
+    size_t total = (size_t)s_sample_rate * duration_ms / 1000u;
+    int16_t buf[AUDIO_OUTPUT_MAX_FRAMES_PER_PACKET * 2];
+    uint32_t phase = 0;
+    size_t done = 0;
+
+    while (done < total) {
+        size_t n = total - done;
+        if (n > AUDIO_OUTPUT_MAX_FRAMES_PER_PACKET) {
+            n = AUDIO_OUTPUT_MAX_FRAMES_PER_PACKET;
+        }
+        for (size_t i = 0; i < n; i++) {
+            int16_t s = (phase < half) ? 9000 : -9000;
+            buf[i * 2]     = s;
+            buf[i * 2 + 1] = s;
+            if (++phase >= period) phase = 0;
+        }
+        audio_output_submit_stereo(buf, n);
+        done += n;
+        /* 按墙钟让消费任务跟上：一包约 n/rate 秒，再留一点余量。 */
+        uint32_t wait_ms = (uint32_t)(n * 1000u / s_sample_rate);
+        if (wait_ms < 1) wait_ms = 1;
+        vTaskDelay(pdMS_TO_TICKS(wait_ms));
+    }
+    return ESP_OK;
+}

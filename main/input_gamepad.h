@@ -25,12 +25,12 @@
  *   3       3V3        摇杆电位器的供电（不是 V！V 是 5V 档）
  *   X       GPIO1      摇杆 X（= Arduino A0），ADC1_CH0
  *   Y       GPIO2      摇杆 Y（= Arduino A1），ADC1_CH1
- *   A       GPIO15     上方大按键 -> SNES X
- *   B       GPIO16     右方大按键 -> SNES A
- *   C       GPIO17     下方大按键 -> SNES B
- *   D       GPIO18     左方大按键 -> SNES Y
- *   F       GPIO8      左侧小按键 -> SELECT
- *   E       GPIO7      右侧小按键 -> START
+ *   A       GPIO15     上方大按键 -> START（兼原 SNES X；E 小键本机损坏不用）
+ *   B       GPIO16     右方大按键 -> SNES A / NES A
+ *   C       GPIO17     下方大按键 -> SNES B / NES B
+ *   D       GPIO18     左方大按键 -> SELECT（兼原 SNES Y；F 小键本机损坏不用）
+ *   F       （可不接）  原 SELECT；Shield F/E 本机换脚仍常故障，固件不再读
+ *   E       （可不接）  原 START
  *
  * V、K 两针空着（K 是摇杆按下）。
  *
@@ -41,8 +41,9 @@
  * 选脚理由：
  *   - X/Y 必须落在 GPIO1~10 —— 那是 ESP32-S3 的 ADC1 通道范围。取 GPIO1/2。
  *     （不用 ADC2：它跟 WiFi 冲突，虽然本项目不开 WiFi，但没必要给以后埋雷。）
- *   - 15/16/17/18 在 DevKitC-1 上是连续四个脚，接四个大按键；
- *     7/8 是剩余且无冲突的普通 GPIO，接 F/E 两个小键。
+ *   - 15/16/17/18 在 DevKitC-1 上是连续四个脚，接四个大按键。
+ *   - E/F 小键：本机在 GPIO7/8 与 21/47 上均表现为「E 常 LO、F 无响应」，
+ *     判定为 Shield 侧故障；固件改用大键 A=START、D=SELECT，E/F 线请拔掉。
  *   - 全部避开了 Octal PSRAM 的 33~37、原生 USB 的 19/20、strapping 的 0/3/45/46。
  *
  * 5110 排针和 nRF24 排针（黄色那排）用不上，空着。
@@ -69,12 +70,15 @@ enum {
 #include <stdbool.h>
 
 /* ============ 接线（改这里就能换脚） ============ */
-#define PAD_PIN_SHIELD_A 15     /* 上 -> SNES X */
+#define PAD_PIN_SHIELD_A 15     /* 上 -> START（E 小键坏时的替代） */
 #define PAD_PIN_SHIELD_B 16     /* 右 -> SNES A */
 #define PAD_PIN_SHIELD_C 17     /* 下 -> SNES B */
-#define PAD_PIN_SHIELD_D 18     /* 左 -> SNES Y */
-#define PAD_PIN_SELECT   8      /* Shield F，左侧小按键；实物接线确认 */
-#define PAD_PIN_START    7      /* Shield E，右侧小按键；实物接线确认 */
+#define PAD_PIN_SHIELD_D 18     /* 左 -> SELECT（兼 Y，菜单亮度 / Genesis C） */
+
+/* E/F 小键：本机 Shield 故障，默认不读。若以后修好，改成 1 并接回 GPIO。 */
+#define PAD_ENABLE_EF_KEYS 0
+#define PAD_PIN_SELECT   47     /* Shield F，仅 PAD_ENABLE_EF_KEYS=1 时使用 */
+#define PAD_PIN_START    21     /* Shield E，仅 PAD_ENABLE_EF_KEYS=1 时使用 */
 
 /* 摇杆两轴。必须是 ADC1 的通道，也就是 GPIO1~10。 */
 #define PAD_PIN_X       1
@@ -117,8 +121,7 @@ void input_gamepad_init(void);
  * 没调 init()、或者两路都没起来时恒返回 0，可以安全地和别的输入源按位或。 */
 uint16_t input_gamepad_poll(void);
 
-/* 摇杆/按键可视化，同时按 SNES A+B（Shield B+C）退出。
- * 需要 display_init() 已经跑过。开机画面选 TEST 时 main.c 会调它；
- * 不再是 input_gamepad_init() 自动触发的（那样每次开机都得看一遍，
- * 想跳过看不了）。 */
+/* 摇杆/按键可视化 + MAX98357 提示音自检。
+ * 上键 A=START（beep）；左键 D=SELECT（兼调音量）；B+C 退出。
+ * E/F 小键本机停用。需要 display_init() 已跑过。 */
 void input_gamepad_show(void);

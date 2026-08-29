@@ -55,8 +55,8 @@
 #define DISP_MIRROR_Y    false
 #define DISP_GAP_X       0
 #define DISP_GAP_Y       0
-#define DISP_INVERT_COLOR true  /* IPS 屏基本都要 true，TN 屏多为 false */
-#define DISP_BGR_ORDER   false
+#define DISP_INVERT_COLOR false /* 实测：开 true 时云彩变黑、草绿变紫（底片） */
+#define DISP_BGR_ORDER   false  /* 绿偏紫不是 BGR：BGR 时绿色应保持不变 */
 
 /* 面板横屏下的可见分辨率 */
 #define DISP_W          320

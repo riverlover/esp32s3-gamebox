@@ -1,0 +1,9 @@
+flowchart TD
+    A[开始] --> B[brew install uv]
+    B --> C{brew cask kicad?}
+    C -->|需要 sudo| D[失败]
+    D --> E[下载官方 DMG]
+    E --> F[cp 到 ~/Applications]
+    F --> G[kicad-cli version]
+    G --> H[uv tool install mcp-server-kicad]
+    H --> I[完成]

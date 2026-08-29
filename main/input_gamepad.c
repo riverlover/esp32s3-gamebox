@@ -28,6 +28,7 @@
 #include "input_serial.h"
 #include "input_usb.h"
 #include "display.h"
+#include "audio_output.h"
 #include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
@@ -68,13 +69,16 @@ static uint8_t s_dir;           /* 方向位的当前状态，迟滞要用 */
 static uint16_t s_last_state;   /* 只在变化时打日志 */
 
 static const struct { int pin; uint16_t mask; const char *name; } BUTTONS[] = {
-    /* Shield 上的字母是硬件丝印；这里按物理方位排成 SNES 菱形。 */
-    { PAD_PIN_SHIELD_A, GAMEPAD_BIT_X,      "X"      },
-    { PAD_PIN_SHIELD_B, GAMEPAD_BIT_A,      "A"      },
-    { PAD_PIN_SHIELD_C, GAMEPAD_BIT_B,      "B"      },
-    { PAD_PIN_SHIELD_D, GAMEPAD_BIT_Y,      "Y"      },
-    { PAD_PIN_SELECT,   GAMEPAD_BIT_SELECT, "SELECT" },
-    { PAD_PIN_START,    GAMEPAD_BIT_START,  "START"  },
+    /* Shield 丝印；E/F 小键本机损坏，START/SELECT 改由上/左大键承担。
+     * D 同时带 Y：菜单亮度、Genesis C、SNES 冷启动仍可用左键。 */
+    { PAD_PIN_SHIELD_A, GAMEPAD_BIT_START,              "START"  },
+    { PAD_PIN_SHIELD_B, GAMEPAD_BIT_A,                  "A"      },
+    { PAD_PIN_SHIELD_C, GAMEPAD_BIT_B,                  "B"      },
+    { PAD_PIN_SHIELD_D, GAMEPAD_BIT_SELECT | GAMEPAD_BIT_Y, "SELECT" },
+#if PAD_ENABLE_EF_KEYS
+    { PAD_PIN_SELECT,   GAMEPAD_BIT_SELECT,             "SELECT" },
+    { PAD_PIN_START,    GAMEPAD_BIT_START,              "START"  },
+#endif
 };
 #define BUTTON_COUNT  (sizeof(BUTTONS) / sizeof(BUTTONS[0]))
 
@@ -190,21 +194,23 @@ static bool axes_init(void)
 /* 可视化的一帧状态。绘制现在跑在核 1 的条带回调里，所以每帧算出来的东西
  * 得先收进这个结构体传过去，不能直接闭包捕获。 */
 typedef struct {
-    int     bx, by, box, hc, vc;    /* 方框几何 */
-    int     px, py;                 /* 光点位置 */
-    int     rx, ry, ex, ey;         /* 原始读数 / 去中位后的偏移 */
-    uint8_t d;                      /* 折算出的方向键位 */
-    uint16_t keys;                  /* 面键 + SELECT/START */
-    const char *storage;            /* ROM 分区占用摘要，诊断画面开着期间不变 */
+    int     bx, by, box, hc, vc;
+    int     px, py;
+    int     rx, ry, ex, ey;
+    uint8_t d;
+    uint16_t keys;
+    const char *storage;
+    const char *sound;
 } viz_t;
 
-static int draw_key_status(int x, int y, const char *name, bool pressed)
+static int draw_key_chip(int x, int y, int w, int h, const char *name, bool pressed)
 {
-    display_text(x, y, name, pressed ? C_GREEN : C_GRAY, 1);
-    return x + (int)strlen(name) * 6 + 8;
+    display_fill_rect(x, y, w, h, pressed ? C_GREEN : RGB565(32, 32, 32));
+    display_rect(x, y, w, h, pressed ? C_WHITE : C_GRAY);
+    display_text(x + 3, y + (h - 8) / 2, name, pressed ? C_BLACK : C_GRAY, 1);
+    return x + w + 3;
 }
 
-/* 整份绘制列表会被逐条带调用 BAND_COUNT 次，落在条带外的行由绘图原语自己裁。 */
 static void viz_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
     const viz_t *v = ctx;
@@ -217,28 +223,31 @@ static void viz_strip(uint16_t *strip, int y0, int h, void *ctx)
 
     char line[48];
     snprintf(line, sizeof(line), "raw %4d %4d", v->rx, v->ry);
-    display_text(4, v->by + v->box + 3, line, C_WHITE, 1);
-    snprintf(line, sizeof(line), "off %+5d %+5d", v->ex, v->ey);
-    display_text(4, v->by + v->box + 12, line, C_GRAY, 1);
-    snprintf(line, sizeof(line), "DIR %c%c%c%c",
+    display_text(4, v->by + v->box + 2, line, C_WHITE, 1);
+    snprintf(line, sizeof(line), "off %+5d %+5d  DIR %c%c%c%c",
+             v->ex, v->ey,
              (v->d & NES_PAD_UP)   ? 'U' : '-', (v->d & NES_PAD_DOWN)  ? 'D' : '-',
              (v->d & NES_PAD_LEFT) ? 'L' : '-', (v->d & NES_PAD_RIGHT) ? 'R' : '-');
-    display_text(4, v->by + v->box + 23, line, C_YELLOW, 1);
+    display_text(4, v->by + v->box + 11, line, C_YELLOW, 1);
 
+    /* 大键：A=START  B=A  C=B  D=SELECT（E/F 小键本机不用） */
+    int y = v->by + v->box + 24;
     int x = 4;
-    int y = v->by + v->box + 35;
-    x = draw_key_status(x, y, "X(A)", v->keys & GAMEPAD_BIT_X);
-    x = draw_key_status(x, y, "Y(D)", v->keys & GAMEPAD_BIT_Y);
-    x = draw_key_status(x, y, "A(B)", v->keys & GAMEPAD_BIT_A);
-    draw_key_status(x, y, "B(C)", v->keys & GAMEPAD_BIT_B);
+    x = draw_key_chip(x, y, 66, 16, "STA(A)", v->keys & GAMEPAD_BIT_START);
+    x = draw_key_chip(x, y, 50, 16, "A(B)",   v->keys & GAMEPAD_BIT_A);
+    x = draw_key_chip(x, y, 50, 16, "B(C)",   v->keys & GAMEPAD_BIT_B);
+        draw_key_chip(x, y, 66, 16, "SEL(D)", v->keys & GAMEPAD_BIT_SELECT);
 
-    x = 4;
-    y += 14;
-    x = draw_key_status(x, y, "SEL(F)", v->keys & GAMEPAD_BIT_SELECT);
-    x = draw_key_status(x, y, "START(E)", v->keys & GAMEPAD_BIT_START);
-    display_text(x + 4, y, "A+B EXIT", C_YELLOW, 1);
+    y += 20;
+    draw_key_chip(4,   y, 138, 18, "START = top A",
+                  v->keys & GAMEPAD_BIT_START);
+    draw_key_chip(146, y, 138, 18, "SELECT = left D",
+                  v->keys & GAMEPAD_BIT_SELECT);
 
-    display_text(4, y + 14, v->storage, C_CYAN, 1);
+    y += 22;
+    display_text(4, y, "E/F unused (shield fault)  B+C EXIT", C_YELLOW, 1);
+    display_text(4, y + 12, v->sound, C_CYAN, 1);
+    display_text(4, y + 24, v->storage, C_GRAY, 1);
 }
 
 static uint16_t read_buttons(void)
@@ -257,16 +266,27 @@ static uint16_t diag_input(void)
     return read_buttons() | input_usb_poll() | input_serial_poll();
 }
 
+static void format_sound_line(char *buf, size_t n, esp_err_t init_err)
+{
+    if (init_err != ESP_OK) {
+        snprintf(buf, n, "SND FAIL %s", esp_err_to_name(init_err));
+    } else if (!audio_output_ready()) {
+        snprintf(buf, n, "SND OFF vol%d%% (D=vol A=beep)",
+                 audio_output_get_volume());
+    } else {
+        snprintf(buf, n, "SND OK vol%d%% A=beep D=vol",
+                 audio_output_get_volume());
+    }
+}
+
 void input_gamepad_show(void)
 {
     if (!s_axes_ok) {
-        ESP_LOGW(TAG, "摇杆没起来，跳过可视化");
-        return;
+        ESP_LOGW(TAG, "摇杆没起来，诊断画面只测按键/声音");
     }
 
-    /* 画布是 DISP_FB_W x DISP_FB_H = 288x224：方框 0~149，下方留给
-     * ADC 数值、方向和两行按键状态，最后一行止于 y=207。 */
-    const int BOX = 150;
+    /* 方框再缩小一点，给 E/F 两大块色块腾行（画布高 224）。 */
+    const int BOX = 112;
     const int BX  = (DISP_FB_W - BOX) / 2;
     const int BY  = 0;
     const int HC  = BX + BOX / 2, VC = BY + BOX / 2;
@@ -274,36 +294,55 @@ void input_gamepad_show(void)
 
     const uint16_t exit_combo = GAMEPAD_BIT_A | GAMEPAD_BIT_B;
 
-    /* 存储占用只需要读一次——rom_menu_pick() 走到这里之前已经调过
-     * rom_store_init()，诊断画面开着的这几秒分区占用也不会变。 */
     size_t used = 0, capacity = 0;
     rom_store_usage(&used, &capacity);
     char storage_line[48];
     if (capacity > 0) {
         int pct = (int)((uint64_t)used * 100 / capacity);
         snprintf(storage_line, sizeof(storage_line),
-                 "ROM %.1f/%.1fMB %d%% (%.1fMB FREE)",
-                 used / (1024.0f * 1024.0f), capacity / (1024.0f * 1024.0f),
-                 pct, (capacity - used) / (1024.0f * 1024.0f));
+                 "ROM %.1f/%.1fMB %d%%",
+                 used / (1024.0f * 1024.0f), capacity / (1024.0f * 1024.0f), pct);
     } else {
         snprintf(storage_line, sizeof(storage_line), "ROM STORAGE: N/A");
     }
 
-    printf("\n摇杆可视化：点跟着手走就说明映射对了。"
-           "屏下方会高亮按下的键，同时按 SNES A+B 退出。\n");
-    /* 上次退出或上电时若还按着其中一键，先等两键全部松开。 */
+    if (audio_output_get_volume() == 0) {
+        audio_output_set_volume(50);
+    }
+    esp_err_t audio_err = audio_output_init(AUDIO_OUTPUT_SAMPLE_RATE);
+    char sound_line[48];
+    format_sound_line(sound_line, sizeof(sound_line), audio_err);
+    ESP_LOGI(TAG, "诊断音频：%s", sound_line);
+
+    printf("\n摇杆可视化（E/F 小键已停用，改用大键）：\n"
+           "  上键 A = START（可 beep）  左键 D = SELECT（兼调音量）\n"
+           "  右键 B = A   下键 C = B   同时按 B+C 退出\n"
+           "  请拔掉 Shield E/F 到板子的线，避免干扰\n");
     while (diag_input() & exit_combo) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
+    uint16_t prev = diag_input();
     while (1) {
         uint16_t keys = diag_input();
         if ((keys & exit_combo) == exit_combo) break;
 
-        int rx = read_axis(s_ch_x);
-        int ry = read_axis(s_ch_y);
+        uint16_t edge = keys & ~prev;
+        prev = keys;
 
-        /* 和 poll() 里同一套方向修正，保证屏上看到的就是游戏收到的 */
+        if (edge & GAMEPAD_BIT_Y) {
+            int vol = audio_output_get_volume() + 10;
+            if (vol > 100) vol = 0;
+            audio_output_set_volume(vol);
+            if (vol > 0 && !audio_output_ready()) {
+                audio_err = audio_output_init(AUDIO_OUTPUT_SAMPLE_RATE);
+            }
+            format_sound_line(sound_line, sizeof(sound_line), audio_err);
+        }
+
+        int rx = s_axes_ok ? read_axis(s_ch_x) : s_center_x;
+        int ry = s_axes_ok ? read_axis(s_ch_y) : s_center_y;
+
         int ex = rx - s_center_x, ey = ry - s_center_y;
         if (PAD_SWAP_XY)  { int t = ex; ex = ey; ey = t; }
         if (PAD_INVERT_X) ex = -ex;
@@ -323,11 +362,21 @@ void input_gamepad_show(void)
         viz_t v = { .bx = BX, .by = BY, .box = BOX, .hc = HC, .vc = VC,
                     .px = px, .py = py, .rx = rx, .ry = ry,
                     .ex = ex, .ey = ey, .d = d, .keys = keys,
-                    .storage = storage_line };
-        display_stream_sync(viz_strip, &v);     /* v 在栈上，必须等推完 */
+                    .storage = storage_line, .sound = sound_line };
+        display_stream_sync(viz_strip, &v);
+
+        /* 先画完再 beep，避免阻塞时看不到 STA 色块变绿。 */
+        if (edge & GAMEPAD_BIT_START) {
+            if (audio_output_ready()) {
+                esp_err_t beep_err = audio_output_beep(880, 180);
+                if (beep_err != ESP_OK) {
+                    ESP_LOGW(TAG, "beep 失败：%s", esp_err_to_name(beep_err));
+                }
+            } else {
+                ESP_LOGW(TAG, "I2S 未就绪，无法 beep（音量是否为 0？）");
+            }
+        }
     }
-    /* 必须等 A/B 都松开才返回；否则先松 A 后松 B 时，残留的 B
-     * 会被选单当成新按下，意外切换声音。 */
     while (diag_input() & exit_combo) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -358,9 +407,12 @@ void input_gamepad_init(void)
         printf("  方向  摇杆没起来（见上面的警告），十字键请用串口 WASD\n");
     }
     if (s_btn_ok) {
-        printf("  SNES 面键：上X / 左Y / 右A / 下B（Shield A/D/B/C）\n");
-        printf("  SELECT Shield F(GPIO%d)  START Shield E(GPIO%d)\n",
+        printf("  大键：上 START(A) / 左 SELECT(D) / 右 A(B) / 下 B(C)\n");
+        printf("  E/F 小键已停用（Shield 故障）；请拔掉对应杜邦线\n");
+#if PAD_ENABLE_EF_KEYS
+        printf("  另：SELECT F(GPIO%d)  START E(GPIO%d)\n",
                PAD_PIN_SELECT, PAD_PIN_START);
+#endif
     } else {
         printf("  按键没起来（见上面的警告），请用串口 K/J/回车/Tab\n");
     }

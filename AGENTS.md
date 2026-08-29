@@ -11,18 +11,25 @@ ESP-IDF v5.4，纯 C，无测试套件 —— 验证靠烧板子 + 看串口输�
 
 ## 编译 / 烧录 / 验证
 
+本机 macOS 完整步骤（Python 3.12、端口、BOOT/RESET、踩坑）见  
+`docs/journey/esp-idf-toolchain/`；新会话优先复制该目录 README 顶部命令块。
+
 ```bash
+# PATH 先放 IDF 的 3.12 venv（本机默认 python3 可能是 3.14，会坏 click / install）
+export PATH="$HOME/.espressif/python_env/idf5.4_py3.12_env/bin:/opt/homebrew/opt/python@3.12/bin:$PATH"
 . ~/esp/esp-idf/export.sh                                  # 每个新终端都要跑一次
 idf.py build
-idf.py -p /dev/cu.usbserial-A5069RR4 flash monitor         # 退出 monitor: Ctrl+]
+# 端口每次 ls：丝印 USB → cu.usbmodem*；丝印 COM → cu.usbserial-*（号码会变）
+idf.py -p /dev/cu.usbmodemXXXX -b 115200 flash monitor     # 退出 monitor: Ctrl+]
 idf.py flash-roms                                          # 只在加/删顶层 roms/ 后跑
 ```
 
-- 端口是板载 FT232R（丝印 `COM` 的 Type-C 口）。`A5069RR4` 是这颗芯片的序列号，
-  换板子会变，用 `ls /dev/cu.usbserial-*` 确认。
+- DevKitC 两个 Type-C：本机实测用 **USB** 口（`cu.usbmodem*`，USB-Serial/JTAG）可烧；
+  **COM** 口是板载 FT232R（`cu.usbserial-*`）。烧前按住 BOOT→点 RESET→松开；烧完只按 RESET。
 - `flash-roms` 是顶层 `CMakeLists.txt` 注册的自定义 target，**故意不挂在 `idf.py flash` 上**：
   ROM 分区 13 MB，Deflate 镜像目前几 MiB（随游戏增删浮动），烧一次仍较久，而它几乎从不变。
   烧录时间只跟镜像实际字节数走（`esptool write_flash` 写的是文件），跟分区开多大无关。
+- 顶层 `roms/` 为空时 `pack_roms.py` 会让 **整个 build 失败**——至少放一个 `.nes`。
 - `sdkconfig` 不入库，由 `sdkconfig.defaults` 生成。要固化配置就改 `.defaults`，
   别改 `sdkconfig`（会被覆盖）。里面每一条都有理由（240 MHz CPU、1000 Hz tick、
   OCT PSRAM、`SPIRAM_MALLOC_RESERVE_INTERNAL=8192`）——改动前先读那些注释。
@@ -48,8 +55,9 @@ idf.py flash-roms                                          # 只在加/删顶层
 | `SHOW_DISPLAY_SELFTEST` | `main/main.c` | 点屏诊断图，验旋转/颜色顺序/反色 |
 | `OVERCLOCK_LEVEL`（默认 0，关闭） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过 |
 
-开机画面（`main.c`）现在会停下来问 GAME/TEST：选 TEST 才会进摇杆位置 +
-两路原始 ADC 值的诊断画面（`input_gamepad_show()`），不再是编译期开关。
+开机画面（`main.c`）现在会停下来问 GAME/TEST：选 TEST 进摇杆 + 按键 +
+MAX98357 提示音诊断（`input_gamepad_show()`）——`START(E)` 播 beep，`Y(D)` 调音量，
+屏上 `SND OK` / `SND OFF` 可区分接线问题和菜单静音到 0%；同时显示两路原始 ADC。
 
 运行时核 0 每秒自报 `NES 60 fps (模拟+转换 8.1 ms/帧，CPU 余量 52%)`。
 两个核并行，帧时间是 `max(核 0, 核 1)`，所以两个数要分开看。
@@ -166,14 +174,42 @@ GPLv2-**only**（源文件无 or later）而 gwenesis 是 GPL v3+/AGPL v3，两�
 
 选脚时永久避开：GPIO33~37（Octal PSRAM）、19/20（原生 USB）、0/3/45/46（strapping）。
 屏的 SCK/MOSI/CS 必须是 SPI2 的 IOMUX 原生脚（12/11/10），换脚会降到 40 MHz。
-摇杆两轴必须在 ADC1 范围（GPIO1~10），当前用 GPIO1/2；GPIO7/8
-已给 Shield E/F 小键用 GPIO7/8 做 START/SELECT。
+摇杆两轴必须在 ADC1 范围（GPIO1~10），当前用 GPIO1/2；Shield E/F 小键
+用 GPIO21/47 做 START/SELECT（7/8 本机实测异常后改脚）。
+
+## 学习复盘文档（用户要求，长期有效）
+
+用户是硬件/EDA 新手，**后续所有话题的步骤、踩坑、思考过程都要落成 Markdown**，
+供复盘、学习和社媒分享。agent 在本仓库干活时默认遵守：
+
+### 写什么
+
+- **分目录、分文件**：一个话题一个子目录，见 `docs/journey/`。单文件别过长，按阶段拆
+  （目标 → 安装 → 配置 → 实操 → 踩坑 → 下一步）。
+- **写给小白能看懂**：术语第一次出现要解释；命令可复制粘贴；写清「为什么」而不只列步骤。
+- **思考过程也要记**：agent 当时怎么判断的、试了哪条路、为什么放弃，写在对应章节的
+  「思考过程」或 `*-thinking.md` 里——这和 `docs/hardware.md` 里记实测踩坑是同一传统。
+- **图尽量有**：原理/流程用 Mermaid（放 `assets/*.mmd` 或内嵌代码块）；适合分享的
+  总览图可生成 PNG 放进同目录 `assets/` 并在 md 里引用。
+- **和代码/工程对齐**：路径、版本号、引脚表要和仓库里真实文件一致；有脚本就写怎么重跑。
+
+### 什么时候写
+
+- **话题告一段落**（安装完成、工程生成、某步验证通过/失败）就更新或新建 md，别等用户催。
+- **AGENTS.md / 固件引脚 / 硬件结论变了**，复盘文档里相关章节同步改，或加「勘误」小节。
+- 新话题从 `docs/journey/_template/` 复制结构再填内容。
+
+### 索引
+
+- `docs/journey/README.md` —— 全部复盘系列的目录与写作规范
+- 当前已有：`esp-idf-toolchain/`（本机编译烧录）、`kicad-gamebox-shield/`、`joystick-shield/`
 
 ## 更多文档
 
 - `README.md` —— 路线图、接线表、操作说明、调色板选择、排障记录
 - `docs/hardware.md` —— 板卡细节、引脚、ST7789 三个坑、逐次优化的实测数据（§7）
 - `docs/memory.md` —— Flash、内部 SRAM、PSRAM 的统一定义和各模拟器分配账
+- `docs/journey/` —— 分话题学习复盘（安装、EDA、PCB 等），见上一节
 - 已知问题：屏没引出 TE 信号，推屏和面板扫描无法同步，画面剧变时有轻微撕裂
 - 已知问题：只跑 SNES 时背光有轻微闪烁，且和画面忙不忙无关（一直都有）。换了
   供电来源后消失，判断是 SNES 单核跑 CPU 模拟+PPU+音频、持续功耗明显高于

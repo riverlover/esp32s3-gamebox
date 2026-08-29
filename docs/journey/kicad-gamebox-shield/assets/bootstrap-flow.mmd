@@ -1,0 +1,6 @@
+flowchart TD
+    S[bootstrap_gamebox_shield.py] --> P[create_project]
+    P --> SCH[place_component + wire_pins_to_net]
+    SCH --> PCB[update_pcb_from_schematic]
+    PCB --> MV[move_footprint 粗定位]
+    MV --> OUT[gamebox-shield.kicad_pro]

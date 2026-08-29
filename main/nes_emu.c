@@ -78,7 +78,7 @@ static const char *TAG = "nes";
  * 5~7 是随 nofrendo 测试套件分发的公有领域 ROM，可以留在仓库里。
  * 0~4 是版权物，由使用者自备，不要提交进仓库（见 .gitignore）。
  */
-#define ROM_CHOICE  2
+#define ROM_CHOICE  0
 
 /* 符号名是 EMBED_FILES 按文件名生成的：非字母数字全换成下划线，
  * 所以 `smb.nes` -> `_binary_smb_nes_start`。 */

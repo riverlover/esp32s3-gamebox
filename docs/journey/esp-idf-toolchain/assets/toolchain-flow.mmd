@@ -1,0 +1,17 @@
+```mermaid
+flowchart TD
+  A[新终端] --> B[PATH 前置<br/>idf5.4_py3.12_env + python@3.12]
+  B --> C[". ~/esp/esp-idf/export.sh"]
+  C --> D{python import click?}
+  D -->|否| B
+  D -->|是| E[确认 roms/ 有游戏]
+  E --> F[idf.py build]
+  F --> G[ls /dev/cu.usbmodem*]
+  G --> H[BOOT 按住 + RESET + 松开]
+  H --> I["idf.py -p PORT flash"]
+  I --> J["idf.py -p PORT flash-roms<br/>仅 ROM 变更时"]
+  J --> K[只按 RESET]
+  K --> L{屏上 GAME/TEST?}
+  L -->|是| M[完成]
+  L -->|waiting for download| K
+```

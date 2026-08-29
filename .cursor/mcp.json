@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "kicad": {
+      "command": "uvx",
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad"],
+      "cwd": "/Users/lizhenhe/esp32/esp32s3-gamebox/hardware/kicad/gamebox-shield",
+      "env": {
+        "PATH": "/Users/lizhenhe/.local/bin:/opt/homebrew/bin:/Users/lizhenhe/Applications/KiCad.app/Contents/MacOS:/Applications/KiCad.app/Contents/MacOS"
+      }
+    }
+  }
+}

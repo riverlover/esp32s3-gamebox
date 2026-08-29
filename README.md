@@ -335,15 +335,15 @@ Arduino UNO 的扩展板，**插不到 DevKitC 上**，只能飞线。走板子�
 | B | GPIO16 | 右方大键 → SNES A |
 | C | GPIO17 | 下方大键 → SNES B |
 | D | GPIO18 | 左方大键 → SNES Y |
-| F | GPIO8 | 左侧小键 → SELECT |
-| E | GPIO7 | 右侧小键 → START |
+| F | GPIO47 | 左侧小键 → SELECT |
+| E | GPIO21 | 右侧小键 → START |
 
 `V`、`K` 空着（K 是摇杆按下）。
 
 ⚠️ **板子左边的 3V3/5V 拨动开关必须拨到 3V3**。摇杆是两个电位器跨在 VCC 和
 GND 之间，拨 5V 档输出就是 5V，而 ESP32-S3 的 GPIO 不是 5V 耐受的。
 
-摇杆两轴必须落在 GPIO1~10（ADC1 的范围），当前用 GPIO1/2；GPIO7/8
+摇杆两轴必须落在 GPIO1~10（ADC1 的范围），当前用 GPIO1/2；GPIO21/47
 已分给 F/E 小键。
 改引脚改 `main/input_gamepad.h` 顶部的 `PAD_PIN_*`。
 

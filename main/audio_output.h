@@ -36,3 +36,10 @@ int audio_output_take_peak(void);
  * AUDIO_OUTPUT_MAX_FRAMES_PER_PACKET 的量拆成多个包依次排队（不截断），
  * 队列满时丢当前包并记入诊断计数。所有模拟器共用这一条宿主接口。 */
 void audio_output_submit_stereo(const int16_t *samples, size_t frame_count);
+
+/* I2S / 消费任务是否已起来。音量 0% 时 init 会故意跳过，此时返回 false。 */
+bool audio_output_ready(void);
+
+/* 诊断用短提示音（方波）。未 ready 时返回 ESP_ERR_INVALID_STATE。
+ * 按包节流提交，避免填满 4 深队列被丢。 */
+esp_err_t audio_output_beep(uint16_t freq_hz, uint16_t duration_ms);

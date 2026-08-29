@@ -31,11 +31,8 @@ idf_component_register(SRCS "main.c" "display.c" "menu_font.c" "nes_emu.c"
                        # 所以体积上限是「固件本体 + 最大的那一个 ROM」，不是全部
                        # ROM 之和。Genesis 加入后 app 分区已扩到 2 MB，嵌入 ROM
                        # 仍只用作分区损坏时的 NES 回退路径。
+                       # 版权 ROM 不入库；本机自备 smb.nes 作分区损坏时的回退。
                        EMBED_FILES "roms/smb.nes"
-                                   "roms/tetris.nes"
-                                   "roms/contra.nes"
-                                   "roms/pacman.nes"
-                                   "roms/drmario.nes"
                                    "roms/SimpleParallaxDemo.nes"
                                    "roms/full_palette.nes"
                                    "roms/flowing_palette.nes")

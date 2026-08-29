@@ -479,16 +479,17 @@ Sonic 3 & Knuckles 实机连续运行约 30 秒：
 **完全自由（7 个）**
 
 ```
-21  38  39  40  41  42  47
+7  8  38  39  40  41  42
 ```
 
+（21/47 已给 Shield E/F；原 7/8 空出可另用，本机曾异常时再慎用。）
 **已占用**
 
 | 引脚 | 占用方 |
 |---|---|
 | 1, 2 | 摇杆 X / Y（ADC1） |
 | 15, 16, 17, 18 | Shield A/B/C/D 四个大键 → SNES X/A/B/Y |
-| 7, 8 | Shield E/F 小键 → START / SELECT |
+| 21, 47 | Shield E/F 小键 → START / SELECT（原 7/8，本机改脚） |
 | 9, 10, 11, 12, 13, 14 | ST7789 屏（BLK / CS / MOSI / SCK / RST / DC） |
 | 48 | 板载 RGB LED（实测；RGB 焊盘断开后才可作普通 IO） |
 | 4, 5, 6 | MAX98357（BCLK / LRC / DIN） |

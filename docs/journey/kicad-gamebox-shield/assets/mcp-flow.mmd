@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant U as 你 / Cursor 对话
+    participant C as Cursor MCP 客户端
+    participant M as mcp-server-kicad
+    participant K as kicad-cli / 文件系统
+
+    U->>C: 自然语言指令
+    C->>M: MCP tool call
+    M->>K: 读/写 .kicad_sch .kicad_pcb
+    M->>K: kicad-cli erc/drc/export
+    K-->>M: 结果
+    M-->>C: 结构化返回
+    C-->>U: 中文总结
