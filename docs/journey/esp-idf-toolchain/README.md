@@ -29,13 +29,18 @@ cd /Users/lizhenhe/esp32/esp32s3-gamebox
 idf.py build
 PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)   # 或 usbserial-*
 idf.py -p "$PORT" -b 115200 flash
-idf.py -p "$PORT" flash-roms          # 加/改顶层 roms/ 后才需要
 # monitor 需要本机 TTY；在 Cursor 外置终端跑，或让用户自己跑：
 # idf.py -p "$PORT" monitor           # 退出: Ctrl+]
+
+# 5) 只加/改顶层 roms/（不必重烧固件）——仓库根一键脚本：
+./flash-roms.sh                       # 或 ./flash-roms.sh /dev/cu.usbmodemXXXX
+# 等价：idf.py -p "$PORT" flash-roms
 ```
 
 **烧录前进下载模式**：按住 **BOOT** → 点一下 **RESET** → 松开 BOOT。  
 **烧完进应用**：只按 **RESET**，不要按住 BOOT。
+
+`flash-roms` **故意不挂在** `idf.py flash` 上：ROM 分区大、几乎只在换游戏时才变；脚本会自动激活 IDF 环境并选端口，细节见 [03-编译烧录](03-build-flash.md)。
 
 ## 阅读顺序
 

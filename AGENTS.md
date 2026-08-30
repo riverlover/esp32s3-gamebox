@@ -21,11 +21,13 @@ export PATH="$HOME/.espressif/python_env/idf5.4_py3.12_env/bin:/opt/homebrew/opt
 idf.py build
 # 端口每次 ls：丝印 USB → cu.usbmodem*；丝印 COM → cu.usbserial-*（号码会变）
 idf.py -p /dev/cu.usbmodemXXXX -b 115200 flash monitor     # 退出 monitor: Ctrl+]
-idf.py flash-roms                                          # 只在加/删顶层 roms/ 后跑
+./flash-roms.sh                                            # 只在加/删顶层 roms/ 后跑（封装环境+端口）
+# 等价：idf.py -p /dev/cu.usbmodemXXXX flash-roms
 ```
 
 - DevKitC 两个 Type-C：本机实测用 **USB** 口（`cu.usbmodem*`，USB-Serial/JTAG）可烧；
   **COM** 口是板载 FT232R（`cu.usbserial-*`）。烧前按住 BOOT→点 RESET→松开；烧完只按 RESET。
+- 仓库根 `flash-roms.sh`：激活 3.12 venv + `export.sh`、自动选端口、跑 `idf.py flash-roms`。
 - `flash-roms` 是顶层 `CMakeLists.txt` 注册的自定义 target，**故意不挂在 `idf.py flash` 上**：
   ROM 分区 13 MB，Deflate 镜像目前几 MiB（随游戏增删浮动），烧一次仍较久，而它几乎从不变。
   烧录时间只跟镜像实际字节数走（`esptool write_flash` 写的是文件），跟分区开多大无关。

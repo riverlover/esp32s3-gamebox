@@ -22,6 +22,7 @@
 | [esp-idf-toolchain/](esp-idf-toolchain/README.md) | 本机 macOS：ESP-IDF v5.4 + Python 3.12、编译烧录一键命令 | **已验证可烧** |
 | [kicad-gamebox-shield/](kicad-gamebox-shield/README.md) | KiCad 10 + uv + mcp-server-kicad + Cursor MCP，生成 Gamebox 载板 PCB v0 | 进行中 |
 | [joystick-shield/](joystick-shield/README.md) | JoyStick Shield 接线 + **E/F 故障改 A/D 映射**（已验证） | **已归档** |
+| [nes-classic-wishlist/](nes-classic-wishlist/README.md) | NES 装机经典优先清单（约 20 款正作）+ 烧录步骤 | 待自备 ROM |
 
 ## 和仓库其他文档的关系
 

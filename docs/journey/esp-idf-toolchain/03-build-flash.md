@@ -79,6 +79,21 @@ idf.py -p "$PORT" flash-roms    # 改过 roms/ 或首次才需要；与 flash �
 `flash` 只烧 bootloader + 分区表 + app。  
 `flash-roms` 烧 `0x210000` 的 ROM 分区（见 `partitions.csv` / 顶层 `CMakeLists.txt` 的 `ROMS_OFFSET`）。
 
+### 一键只烧 ROM（推荐）
+
+往顶层 `roms/` 丢进新游戏（例如 `roms/nes/0085泡泡龙.nes`）后，**不用重烧固件**，在仓库根跑：
+
+```bash
+cd /Users/lizhenhe/esp32/esp32s3-gamebox
+./flash-roms.sh                 # 自动找 cu.usbmodem* / cu.usbserial-*
+# 或显式端口：
+./flash-roms.sh /dev/cu.usbmodem1101
+```
+
+脚本会：把 IDF 的 Python 3.12 venv 放到 PATH 最前 → `source ~/esp/esp-idf/export.sh` →
+重新打包 `roms/` → `idf.py flash-roms`。烧前同样要进下载模式（BOOT→RESET→松 BOOT）；
+烧完只按 RESET，菜单里按文件名排序应能看到新游戏。
+
 ## 烧完进应用
 
 - **只按 RESET**，不要按住 BOOT  
