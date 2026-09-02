@@ -36,30 +36,31 @@
 #include "input_gamepad.h"
 #include "input_usb.h"
 #include "audio_output.h"
+#include "game_menu.h"
 #include "rgb_led.h"
 #include "nofrendo.h"
+#include "nes/state.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
+#include "esp_crc.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 
 static const char *TAG = "nes";
 
-/* 退出到 ROM 菜单：SELECT+START 长按 1 秒触发 esp_restart()。nofrendo 没有
- * 卡带电池 SRAM 落盘机制，软重启不丢数据。 */
-#define EXIT_COMBO_BITS (GAMEPAD_BIT_SELECT | GAMEPAD_BIT_START)
-#define EXIT_HOLD_US    1000000
+/* SELECT+X 打开游戏内菜单；X 是宿主公共高位，NES 核心本身不会收到它。 */
+#define MENU_COMBO_BITS (GAMEPAD_BIT_SELECT | GAMEPAD_BIT_X)
 
 /* ---- 编译期嵌入的回退 ROM ----
  *
- * ⚠ 平时换游戏**不用改这里** —— 开机选单（rom_menu.c）会列出 roms 分区里
- * 全部游戏让你选。这个宏只决定「选单不可用时跑哪个」：roms 分区还没烧过
- * （`idf.py flash-roms`）、或者镜像坏了的时候，nes_emu_run(NULL) 会回退到它。
+ * ⚠ 平时换游戏**不用改这里** —— 开机选单（rom_menu.c）会列出 TF 卡上
+ * 全部游戏让你选。这个宏只决定「选单不可用时跑哪个」：没插卡、卡挂不上、
+ * 或者卡上一个合法 ROM 都没有的时候，nes_emu_run(NULL) 会回退到它。
  *
- * 留着这条回退路径的理由：选单是新东西，它坏了不该让整块板子玩不了游戏。
- * 顺便也保住了「只烧固件、不烧 13 MiB 的 ROM 分区」这个快速迭代路径。
+ * 留着这条回退路径的理由：ROM 现在全靠一张外置卡，卡这条路一断整块板子就
+ * 玩不了游戏了。嵌进固件的这个不依赖任何外设，是最后一道保底。
  *
  * 游戏（都在 main/roms/，加新的要同时在 main/CMakeLists.txt 的 EMBED_FILES 里登记）：
  *
@@ -257,6 +258,29 @@ static void black_strip(uint16_t *strip, int y0, int h, void *ctx)
     display_clear(C_BLACK);
 }
 
+static bool nes_state_save_file(const char *path, void *ctx)
+{
+    (void)ctx;
+    return state_save(path) == 0;
+}
+
+static bool nes_state_load_file(const char *path, void *ctx)
+{
+    (void)ctx;
+    bool ok = state_load(path) == 0;
+    if (!ok) nes_reset(true);
+    nes_setvidbuf(s_vidbuf[s_draw_idx]);
+    return ok;
+}
+
+static void nes_state_reset(bool hard, void *ctx)
+{
+    (void)ctx;
+    /* nofrendo 的 reset 会故意清 vidbuf；宿主必须像初次装卡后一样重新接回。 */
+    nes_reset(hard);
+    nes_setvidbuf(s_vidbuf[s_draw_idx]);
+}
+
 /* nofrendo 每模拟完一帧调一次 */
 static void blit_frame(uint8_t *vidbuf)
 {
@@ -351,13 +375,17 @@ esp_err_t nes_emu_run(const rom_store_entry_t *entry)
         rom_size = rom_end - rom_start;
         name     = ROM_NAME;
     } else {
-        esp_err_t err = rom_store_load(entry, 0, &image);
+        /* 载入前 vidbuf 还没开始画，借一块约 60 KB 内部 RAM 给 TF/ZIP 做 DMA
+         * 读盘；返回后 ROM 已在 PSRAM，PPU 再照常把它当视频缓冲使用。 */
+        esp_err_t err = rom_store_load_with_scratch(
+            entry, 0, &image, s_vidbuf[0], NES_SCREEN_PITCH * NES_SCREEN_HEIGHT);
         if (err != ESP_OK) return err;
         rom = image.data;
         rom_size = image.size;
         name = entry->name;
     }
     printf("\nROM: %s  (%u 字节)\n", name, (unsigned)rom_size);
+    uint32_t rom_crc = esp_crc32_le(0, rom, rom_size);
 
     /* 把菜单擦掉。只要一次 —— 没有常驻缓冲了，之后每帧都是现算的。 */
     display_stream_sync(black_strip, NULL);
@@ -461,26 +489,33 @@ esp_err_t nes_emu_run(const rom_store_entry_t *entry)
     input_usb_init();
     input_gamepad_init();
 
+    const game_menu_config_t menu = {
+        .system = "nes",
+        .rom_crc = rom_crc,
+        .save_state = nes_state_save_file,
+        .load_state = nes_state_load_file,
+        .reset = nes_state_reset,
+    };
+
     s_next_frame = s_stat_t0 = s_frame_t0 = esp_timer_get_time();
-    int64_t exit_hold_t0 = 0;
     while (1) {
         /* 端口 0 的手柄在 input_init() 里已经接好了，这里只管更新状态。
          * 按位或：两路谁按下都算数。 */
         uint16_t raw = input_serial_poll() | input_gamepad_poll() |
                       input_usb_poll();
 
-        bool exit_combo = (raw & EXIT_COMBO_BITS) == EXIT_COMBO_BITS;
-        if (exit_combo) {
-            /* 组合键属于系统，不让游戏同时收到 SELECT/START。 */
-            raw &= ~EXIT_COMBO_BITS;
-            int64_t now = esp_timer_get_time();
-            if (exit_hold_t0 == 0) exit_hold_t0 = now;
-            if (now - exit_hold_t0 >= EXIT_HOLD_US) {
+        if ((raw & MENU_COMBO_BITS) == MENU_COMBO_BITS) {
+            /* 组合键属于系统，不让游戏同时收到 SELECT。菜单内部会等
+             * 全部按键松开，返回后不会把确认键注入游戏。 */
+            input_update(0, 0);
+            if (game_menu_open(&menu) == GAME_MENU_RESTART) {
                 rgb_led_off();
                 esp_restart();
             }
-        } else {
-            exit_hold_t0 = 0;
+            s_next_frame = s_stat_t0 = s_frame_t0 = esp_timer_get_time();
+            s_frames = 0;
+            s_emu_us = 0;
+            continue;
         }
 
         input_update(0, (uint8_t)raw);

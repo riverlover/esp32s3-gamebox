@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "audio";
@@ -38,6 +39,8 @@ typedef struct {
 
 static i2s_chan_handle_t s_tx;
 static QueueHandle_t s_queue;
+static SemaphoreHandle_t s_stopped;
+static TaskHandle_t s_task;
 static int16_t s_mono[NES_AUDIO_MAX_SAMPLES_PER_FRAME];
 static audio_packet_t s_producer_packet;
 static uint32_t s_dropped;
@@ -50,6 +53,23 @@ static atomic_int s_volume = ATOMIC_VAR_INIT(AUDIO_VOLUME_DEFAULT);
  * 不会出现"听不见但灯还在闪"的错位。take 语义（读后清零）让每次轮询
  * 拿到的是"上次轮询以来"的峰值，不会被同一窗口内的旧值覆盖漏掉瞬态。 */
 static atomic_int s_recent_peak = ATOMIC_VAR_INIT(0);
+
+/* 百分比是给人看的档位，不该直接当线性振幅。线性 50->55 只增加约 0.8 dB，
+ * 小喇叭上几乎听不出变化；这条以 50% 为锚点的 S 曲线保持默认响度不变，
+ * 同时把中间常用区的档位差拉开、把两端压细。 */
+static int volume_curve_percent(int percent)
+{
+    if (percent <= 0) return 0;
+    if (percent >= 100) return 100;
+    if (percent <= 50) return (percent * percent + 25) / 50;
+    int remaining = 100 - percent;
+    return 100 - (remaining * remaining + 25) / 50;
+}
+
+static int32_t volume_gain_q15(int percent)
+{
+    return AUDIO_GAIN_MAX_Q15 * volume_curve_percent(percent) / 100;
+}
 
 esp_err_t audio_output_settings_init(void)
 {
@@ -83,9 +103,10 @@ int audio_output_take_peak(void)
  * 交给 audio_task() 里的 gain_q15，档位 100% 封顶在 AUDIO_GAIN_MAX_Q15
  * （满量程的 90%，留 10% 余量防削波）。这段还没在新喇叭上测过高档位
  * 会不会削波/失真，听到破音就把默认档位往下调，或者把这个余量再调大。 */
-void audio_output_submit_stereo(const int16_t *samples, size_t frame_count)
+static bool submit_stereo(const int16_t *samples, size_t frame_count, TickType_t wait)
 {
-    if (!s_queue || !samples || frame_count == 0) return;
+    if (!s_queue || !samples || frame_count == 0) return false;
+    bool complete = true;
 
     /* 超过一个包的量拆开排队，不再截断。SNES 跑不满 60 fps 时按墙钟补的
      * 采样数会超过 AUDIO_OUTPUT_MAX_FRAMES_PER_PACKET（见 snes_emu.c），
@@ -101,12 +122,32 @@ void audio_output_submit_stereo(const int16_t *samples, size_t frame_count)
         s_producer_packet.sample_count = chunk;
         memcpy(s_producer_packet.stereo, samples, chunk * 2 * sizeof(int16_t));
 
-        if (xQueueSend(s_queue, &s_producer_packet, 0) != pdTRUE) {
+        if (xQueueSend(s_queue, &s_producer_packet, wait) != pdTRUE) {
             s_dropped++;
+            complete = false;
         }
         samples     += chunk * 2;
         frame_count -= chunk;
     }
+    return complete;
+}
+
+void audio_output_submit_stereo(const int16_t *samples, size_t frame_count)
+{
+    (void)submit_stereo(samples, frame_count, 0);
+}
+
+bool audio_output_submit_stereo_wait(const int16_t *samples, size_t frame_count,
+                                     uint32_t timeout_ms)
+{
+    TickType_t wait = timeout_ms == UINT32_MAX
+                    ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return submit_stereo(samples, frame_count, wait);
+}
+
+void audio_output_flush(void)
+{
+    if (s_queue) xQueueReset(s_queue);
 }
 
 /* 由链接器替换 nofrendo 的 apu_emulate() 调用。函数仍在模拟线程里运行，
@@ -133,17 +174,21 @@ static void audio_task(void *arg)
 {
     audio_packet_t packet;
     uint32_t frames_written = 0;
-    int32_t gain_q15 = AUDIO_GAIN_MAX_Q15 * audio_output_get_volume() / 100;
+    int32_t gain_q15 = volume_gain_q15(audio_output_get_volume());
     uint32_t fade_frames = (s_sample_rate * AUDIO_FADE_MS + 999) / 1000;
     int32_t fade_step = (AUDIO_GAIN_MAX_Q15 + (int32_t)fade_frames - 1) / (int32_t)fade_frames;
 
     while (1) {
         if (xQueueReceive(s_queue, &packet, portMAX_DELAY) != pdTRUE) continue;
+        if (packet.sample_count == 0) {
+            xSemaphoreGive(s_stopped);
+            vTaskDelete(NULL);
+        }
 
         /* 不停 I2S、不停队列：静音仍持续送零采样，因此恢复时不用重建 DMA，
          * 也不会让模拟线程因为队列状态变化而丢帧。20ms 线性淡变只在消费侧
          * 修改栈上的包，NES/GB/GBC 的生产路径完全不用分叉。 */
-        int32_t target_gain = AUDIO_GAIN_MAX_Q15 * audio_output_get_volume() / 100;
+        int32_t target_gain = volume_gain_q15(audio_output_get_volume());
         size_t packet_bytes = packet.sample_count * 2 * sizeof(int16_t);
         if (gain_q15 == 0 && target_gain == 0) {
             /* 稳定静音是常态路径，整包清零比每个采样做乘法快得多。 */
@@ -204,8 +249,13 @@ static void audio_task(void *arg)
 
 esp_err_t audio_output_init(uint32_t sample_rate)
 {
-    if (s_tx) return ESP_OK;
     if (sample_rate == 0) return ESP_ERR_INVALID_ARG;
+    if (s_tx && s_sample_rate == sample_rate) return ESP_OK;
+    if (s_tx) {
+        ESP_LOGI(TAG, "I2S 采样率从 %uHz 切换到 %uHz",
+                 (unsigned)s_sample_rate, (unsigned)sample_rate);
+        audio_output_shutdown();
+    }
     if (audio_output_get_volume() == 0) {
         /* 档位只在开机选单里改，进入游戏后本局状态固定。0% 时连 I2S、DMA、
          * 队列和消费任务都不创建；各模拟器仍可推进自己的混音器状态，只把
@@ -217,6 +267,12 @@ esp_err_t audio_output_init(uint32_t sample_rate)
 
     s_queue = xQueueCreate(AUDIO_QUEUE_FRAMES, sizeof(audio_packet_t));
     if (!s_queue) return ESP_ERR_NO_MEM;
+    s_stopped = xSemaphoreCreateBinary();
+    if (!s_stopped) {
+        vQueueDelete(s_queue);
+        s_queue = NULL;
+        return ESP_ERR_NO_MEM;
+    }
 
     i2s_chan_config_t chan_cfg =
         I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
@@ -253,7 +309,7 @@ esp_err_t audio_output_init(uint32_t sample_rate)
      * 4096 字节在连续运行到约 900 包时实测触发栈溢出；6144 留出余量，
      * 同时用上面的 high-water mark 持续观察，而不是靠短时启动判断。 */
     BaseType_t created = xTaskCreatePinnedToCore(
-        audio_task, "game_audio", 6144, NULL, 3, NULL, 0);
+        audio_task, "game_audio", 6144, NULL, 3, &s_task, 0);
     if (created != pdPASS) {
         err = ESP_ERR_NO_MEM;
         i2s_channel_disable(s_tx);
@@ -270,9 +326,48 @@ fail_channel:
     i2s_del_channel(s_tx);
     s_tx = NULL;
 fail_queue:
+    vSemaphoreDelete(s_stopped);
+    s_stopped = NULL;
     vQueueDelete(s_queue);
     s_queue = NULL;
     return err;
+}
+
+void audio_output_shutdown(void)
+{
+    if (!s_tx) return;
+
+    /* 队列可能正塞着 80 ms 的语音。先清空再送零长度哨兵，才能保证消费任务
+     * 很快退出；直接删任务有机会把它截在 i2s_channel_write() 内部并留下锁。 */
+    /* audio_packet_t 含 528 帧立体声，整个对象约 2.1 KB。这里若在调用栈上
+     * 临时创建，app_main -> word_study_run -> word_audio_shutdown 的嵌套栈
+     * 会超过主任务仅有的 3584 字节，按 B 退出 WORDS 时直接触发栈溢出重启。
+     * 单词播放任务已经先退出，此时没有生产者会再碰这个全局包，复用它发送
+     * 零长度哨兵既不增加常驻内存，也不再消耗主任务栈。 */
+    s_producer_packet.sample_count = 0;
+    xQueueReset(s_queue);
+    if (xQueueSend(s_queue, &s_producer_packet, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(1500)) != pdTRUE) {
+            ESP_LOGE(TAG, "音频任务停止超时，保留 I2S 避免在写入中强拆");
+            return;
+        }
+    } else {
+        ESP_LOGE(TAG, "音频停止哨兵发送失败，保留 I2S");
+        return;
+    }
+
+    s_task = NULL;
+    esp_err_t err = i2s_channel_disable(s_tx);
+    if (err != ESP_OK) ESP_LOGW(TAG, "I2S 停止异常：%s", esp_err_to_name(err));
+    err = i2s_del_channel(s_tx);
+    if (err != ESP_OK) ESP_LOGW(TAG, "I2S 释放异常：%s", esp_err_to_name(err));
+    s_tx = NULL;
+    vQueueDelete(s_queue);
+    s_queue = NULL;
+    vSemaphoreDelete(s_stopped);
+    s_stopped = NULL;
+    s_sample_rate = 0;
+    ESP_LOGI(TAG, "MAX98357/I2S 已释放");
 }
 
 bool audio_output_ready(void)

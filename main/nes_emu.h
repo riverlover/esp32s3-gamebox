@@ -22,7 +22,7 @@ void nes_emu_release_prealloc(void);
  * 调用前必须先 nes_emu_prealloc() 和 display_init()。
  *
  * entry 来自 rom_menu_pick()；原样 ROM 继续 mmap，Deflate ROM 在这里解到
- * PSRAM。传 NULL 则用编译期嵌进固件的那个 —— roms 分区没烧过时的回退。
+ * PSRAM。传 NULL 则用编译期嵌进固件的那个 —— TF 卡不可用时的回退。
  *
  * ROM 数据必须在整个运行期间保持有效：nofrendo 的 rom_loadmem 只存指针，
  * 不拷贝。mmap 出来的和 EMBED_FILES 嵌入的都满足这点。 */

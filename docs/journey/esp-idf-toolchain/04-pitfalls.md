@@ -77,4 +77,4 @@ Monitor requires standard input to be attached to TTY
 | 工具链问题优先查「哪个 python」 | `which python` + `import click` |
 | 硬件连接问题优先实验 | 换口 / BOOT+RESET / 只 RESET，一次改一个变量 |
 | 文档里的 `usbserial-A5069RR4` 会随板子变 | 以 `ls /dev/cu.usb*` 为准 |
-| ROM 分区与 app 分开烧 | 改代码只 `flash`；改游戏再 `flash-roms` |
+| ROM 与 app 分开 | 改代码只 `flash`；换游戏拷 TF；发音包变了才 `flash-word-audio` |

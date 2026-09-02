@@ -82,6 +82,18 @@ unsigned char *ZRAM; // Z80 RAM
 unsigned char TMSS[0x4];
 extern unsigned short gwenesis_vdp_status;
 
+/* M68K RAM 之后先保住不能降到 PSRAM 的音频热数据，再让宿主申请可回退的
+ * VRAM。之前顺序相反，功能增长把余量挤穿后，最后一张 YM2612 表返回 NULL，
+ * init_tables() 仍直接写入，Golden Axe 启动即 StoreProhibited。 */
+bool gwenesis_bus_reserve_internal(void)
+{
+    if (!ZRAM) {
+        ZRAM = heap_caps_malloc(MAX_Z80_RAM_SIZE,
+                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    return ZRAM && YM2612ReserveTables();
+}
+
 // TMSS
 int tmss_state = 0;
 int tmss_count = 0;
@@ -111,11 +123,10 @@ void load_cartridge()
 }
 #else
 
-void load_cartridge(unsigned char *buffer, size_t size)
+bool load_cartridge(unsigned char *buffer, size_t size)
 {
-    if (!ZRAM) {
-        ZRAM = heap_caps_malloc(MAX_Z80_RAM_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    }
+    /* 正常路径已由宿主提前预留；保留这里的兜底，兼容其他调用方。 */
+    if (!ZRAM && !gwenesis_bus_reserve_internal()) return false;
 
     // Clear all volatile memory
     memset(M68K_RAM, 0, MAX_RAM_SIZE);
@@ -163,6 +174,7 @@ void load_cartridge(unsigned char *buffer, size_t size)
 
 
     set_region();
+    return true;
 }
 
 #endif
@@ -173,7 +185,7 @@ void load_cartridge(unsigned char *buffer, size_t size)
  *   Initialize 68K, Z80 and YM2612 Cores
  *
  ******************************************************************************/
-void power_on() {
+bool power_on() {
   // Set M68K CPU as original MOTOROLA 68000
   //m68k_set_cpu_type(M68K_CPU_TYPE_68000);
   // Initialize M68K CPU
@@ -181,7 +193,7 @@ void power_on() {
   // Initialize Z80 CPU
   z80_start();
   // Initialize YM2612 chip
-  YM2612Init();
+  if (!YM2612Init()) return false;
   YM2612Config(9);
   // Initialize PSG SN76489 chip
   //CLOCK_NTSC      = 3579545,
@@ -196,6 +208,7 @@ void power_on() {
 
   gwenesis_SN76489_Init(3579545, 888*60,AUDIO_FREQ_DIVISOR);
 
+  return true;
 }
 
 /******************************************************************************

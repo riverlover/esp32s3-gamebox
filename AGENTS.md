@@ -21,19 +21,22 @@ export PATH="$HOME/.espressif/python_env/idf5.4_py3.12_env/bin:/opt/homebrew/opt
 idf.py build
 # 端口每次 ls：丝印 USB → cu.usbmodem*；丝印 COM → cu.usbserial-*（号码会变）
 idf.py -p /dev/cu.usbmodemXXXX -b 115200 flash monitor     # 退出 monitor: Ctrl+]
-./flash-roms.sh                                            # 只在加/删顶层 roms/ 后跑（封装环境+端口）
-# 等价：idf.py -p /dev/cu.usbmodemXXXX flash-roms
+idf.py flash-word-audio                                   # 只在教材词表/发音参数变化后跑
 ```
 
 - DevKitC 两个 Type-C：本机实测用 **USB** 口（`cu.usbmodem*`，USB-Serial/JTAG）可烧；
   **COM** 口是板载 FT232R（`cu.usbserial-*`）。烧前按住 BOOT→点 RESET→松开；烧完只按 RESET。
-- 仓库根 `flash-roms.sh`：激活 3.12 venv + `export.sh`、自动选端口、跑 `idf.py flash-roms`。
-- `flash-roms` 是顶层 `CMakeLists.txt` 注册的自定义 target，**故意不挂在 `idf.py flash` 上**：
-  ROM 分区 13 MB，Deflate 镜像目前几 MiB（随游戏增删浮动），烧一次仍较久，而它几乎从不变。
+- 游戏 ROM **只从 TF 卡读**（约定目录 `/roms/{nes,gb,gbc,snes,md}/`），拷进去再 RESET 即可，
+  不用重烧固件。仓库根 `flash-roms.sh` 已改成提示这条路径（旧 flash 分区方案已废弃）。
+- `flash-word-audio` 是顶层 `CMakeLists.txt` 注册的自定义 target，**故意不挂在 `idf.py flash` 上**：
+  英式发音包约 3.62 MiB，烧一次仍较久，而教材词表几乎不变。
   烧录时间只跟镜像实际字节数走（`esptool write_flash` 写的是文件），跟分区开多大无关。
 - 顶层 `roms/` 为空时 `pack_roms.py` 会让 **整个 build 失败**——至少放一个 `.nes`。
 - `sdkconfig` 不入库，由 `sdkconfig.defaults` 生成。要固化配置就改 `.defaults`，
-  别改 `sdkconfig`（会被覆盖）。里面每一条都有理由（240 MHz CPU、1000 Hz tick、
+  别改 `sdkconfig`（会被覆盖）。
+  ⚠️ **改完 `.defaults` 必须 `rm sdkconfig` 再 build**：IDF 只在 `sdkconfig`
+  不存在时读 defaults，已有的 `sdkconfig` 会赢。踩过一次——加了长文件名配置，
+  build 通过、烧进去一查压根没生效。里面每一条都有理由（240 MHz CPU、1000 Hz tick、
   OCT PSRAM、`SPIRAM_MALLOC_RESERVE_INTERNAL=8192`）——改动前先读那些注释。
 
 ⚠️ **烧录和串口监视需要接着板子**，agent 通常做不到。改完代码把命令交给用户跑，
@@ -44,7 +47,7 @@ idf.py -p /dev/cu.usbmodemXXXX -b 115200 flash monitor     # 退出 monitor: Ctr
 `main/CMakeLists.txt` 的 `EMBED_FILES` 引用了 5 个版权 ROM（`main/roms/{smb,tetris,contra,pacman,drmario}.nes`），
 它们在 `.gitignore` 里。自备文件放进去，或者把 `main/nes_emu.c` 顶部的 `ROM_CHOICE`
 改成 5/6/7（随仓库分发的公有领域测试 ROM）并从 `EMBED_FILES` 删掉缺失的行。
-顶层 `roms/`（给 `flash-roms` 用的本地游戏）同样不入库。
+顶层 `roms/` 是旧打包工具留下的本地游戏目录，不入库；运行时游戏只从 TF 卡读。
 
 ### 板上验证的诊断开关
 
@@ -55,18 +58,34 @@ idf.py -p /dev/cu.usbmodemXXXX -b 115200 flash monitor     # 退出 monitor: Ctr
 | `DISP_PROFILE`（默认 1） | `main/display.c` | 每秒打一行核 1 推屏耗时。调 `BAND_LINES` / 画布尺寸时看这个 |
 | `DIAG_TIMING` | `main/nes_emu.c` | 开机跑一遍分阶段计时（只 CPU / +PPU / 完整），定位核 0 瓶颈 |
 | `SHOW_DISPLAY_SELFTEST` | `main/main.c` | 点屏诊断图，验旋转/颜色顺序/反色 |
-| `OVERCLOCK_LEVEL`（默认 0，关闭） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过 |
+| `SD_SELFTEST`（默认 0） | `main/main.c` | TF 卡自检：列根目录 + 写读校验，只走串口。**换卡或改接线时打开**，慢卡上要多花两秒 |
+| `SD_BENCHMARK`（默认 0） | `main/sd_card.c` | 扇区读基准，量这张卡的命令固定开销和吞吐。判读方法和本机实测值见那个函数的注释 |
+| `SCAN_PROFILE`（默认 0） | `main/rom_store.c` | 扫描分阶段计时（readdir / stat），定位扫描慢在哪 |
+| `OVERCLOCK_LEVEL`（**默认 4，已开启**） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过。2026-08-28 为 PC Engine 把默认值从 0 改成 4：实画帧 12~18 → 20~28，其余四个核心一并受益，且一个字节内存都不花。想回出厂主频把这个宏改回 0 |
 
-开机画面（`main.c`）现在会停下来问 GAME/TEST：选 TEST 进摇杆 + 按键 +
-MAX98357 提示音诊断（`input_gamepad_show()`）——`START(E)` 播 beep，`Y(D)` 调音量，
-屏上 `SND OK` / `SND OFF` 可区分接线问题和菜单静音到 0%；同时显示两路原始 ADC。
+开机画面（`main.c`）现在会停下来问 GAME/WORDS/SETTINGS：WORDS 进入苏州小学译林版
+三至六年级上/下册选择，再选择 Unit 1～8；每册进度按教材版本独立保存；SETTINGS
+沿用 retro-go Options 的单列交互；游戏以外的界面统一走 gruvbox light，可调音量
+和背光；音量使用以 50% 为锚点的听感曲线，每次调整立即播放 `hello` 试听；也可进入
+摇杆 + 按键 + MAX98357 提示音诊断（`input_gamepad_show()`）——本机 Shield E/F
+故障后改用大键：`START(A)` 播 beep，`SELECT(D)` 调音量，屏上 `SND OK` / `SND OFF`
+可区分接线问题和菜单静音到 0%；同时显示两路原始 ADC 与 TF 卡占用。
 
 运行时核 0 每秒自报 `NES 60 fps (模拟+转换 8.1 ms/帧，CPU 余量 52%)`。
 两个核并行，帧时间是 `max(核 0, 核 1)`，所以两个数要分开看。
 
 ## 架构
 
-启动链：`app_main`（main.c）→ `nes_emu_prealloc` → `display_init` → `rom_menu_pick` → 对应模拟器（不返回）。
+启动链：`app_main`（main.c）→ `nes_emu_prealloc` → `display_init` → GAME/WORDS/SETTINGS；
+WORDS 在 `word_study_run()` 内可反复换年级、册次和单元；三上按教材 Word lists
+完整收录 127 项（各单元 13/11/17/9/18/12/31/16），其余分册暂为每单元 8 个核心词；
+卡片正面自动播放英式发音，X 可重播，QUIZ 判题时答对/答错分别播放上升/下降
+8-bit 掌机音效，顶部对应进度格同步变绿/红，本单元全部答对时在结果页播放专属
+过关短曲；返回后会释放 24 kHz I2S，
+再回到开机模式选择；
+GAME 再进 `rom_menu_pick`；平台页是 2×3 卡片网格，游戏列表每页 8 项并把编号做成
+独立徽标；游戏列表 B 返回平台页，平台页 B 返回开机模式选择；音量、背光和
+Controller Test 集中在 SETTINGS，选定游戏后进入对应模拟器（不返回）。
 
 ### 双核分工与「条带流式推屏」
 
@@ -96,7 +115,7 @@ MAX98357 提示音诊断（`input_gamepad_show()`）——`START(E)` 播 beep，
 - 条带越少越快：每条带约 122 µs 固定开销，串行叠加在总线时间上（实测数据见
   `display.c` 文件头和 `docs/hardware.md` §7）。
 
-### 菜单画布 288×224，四款模拟器铺满 320×240 面板
+### 菜单画布 288×224，五款模拟器铺满 320×240 面板
 
 `DISP_FB_W/H` 是画布，`DISP_W/H` 是面板，画布居中，四周黑边由 `display_init()`
 开机清一次、之后再不碰。288 = 256×9/8，是为了修 NES 的 8:7 像素宽高比——这段历史
@@ -106,26 +125,78 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
 消失」的测算结论，上板实测已经证伪——铺满后都能稳定 60 fps，没有精灵丢失。
 完整推导见 `display.h`。
 
-### ROM 来源：分区 mmap，编译期嵌入做回退
+### ROM 来源：TF 卡，编译期嵌入做回退
 
-- `roms/**/*.{nes,gb,gbc,sfc,smc,md,bin,zip}` → `tools/pack_roms.py` 打成自定义镜像
-  （`.zip` 里恰好有一个可识别 ROM 时自动取出；0 个或多个都只打一行提示跳过。
-  不认识的扩展名和 `.7z`/`.rar` 同样会打提示——以前是静默消失，最难查。
-  GB/GBC 还会查 mapper：gnuboy 没实现 MBC6/MBC7/MMM01，那类卡带烧进去是黑屏，
-  打包时就警告，见 `components/gnuboy/README.gamebox.md`）
-  （magic + 定长目录表 + 每个 ROM 独立 raw Deflate）
-  → 烧进 `partitions.csv` 里 offset `0x210000` 的 13 MB `roms` 分区（子类型 0x40）。
-  分区容量由 `pack_roms.py` 的 `roms_partition_size()` 现读 `partitions.csv`，
-  改分区大小不用再同步脚本（以前写死 8 MB，扩容时忘了改会在打包这步炸）。
-- `roms/` 按平台分子目录（`nes/` `gb/` `gbc/` `snes/` `md/`），**纯粹是给人看的**：
-  平台由 ROM 头判定，不看目录名，放错目录也不影响结果。菜单顺序也和目录无关
-  （排序键取文件名，不含路径）。想临时下架一个游戏就挪进 `removed-YYYYMMDD/`，
-  `pack_roms.py` 会整棵跳过前缀为 `removed` / `_` / `.` 的目录。
-- `rom_store.c` 一次 `esp_partition_mmap` 整个分区，菜单只读目录；确认后只把选中的
-  Deflate ROM 解到 PSRAM。SNES 必须直接解到最终可写缓冲，不能先解一份再复制 4 MiB。
-  **故意不用 SPIFFS/ZIP 文件系统**：自定义目录已经提供随机访问，套第二层目录只会重复。
-- `rom_store_init()` 的校验写得很啰嗦是因为 offset/size 直接当指针用，而数据来自 flash
-  （没烧过时全是 0xFF）。所有失败都只返回 0、不 abort，调用方回退到 `ROM_CHOICE` 选的嵌入 ROM。
+**游戏全部从 TF 卡读**。原 13 MB `roms` 分区已经改为 `word_audio`，放
+`tools/build_word_audio.py` 生成的 Daniel（en_GB）离线发音包；`tools/pack_roms.py`
+只作为旧格式工具保留，不再接入构建。
+
+- 卡上随便怎么摆。`rom_store.c` 从 `/sd` 递归扫描（最多 4 层），认这些扩展名：
+  `.nes .gb .gbc .sfc .smc .md .bin .pce .sgx .zip`。前缀是 `.` / `_` / `removed` 的目录整棵跳过，
+  `System Volume Information` 也跳过。RAR / 7z 等其他压缩格式仍需先在电脑上解开。
+- 裸 ROM 的平台不看目录，只按扩展名定。ZIP 为保证开机速度，路径含
+  `nes/gb/gbc/snes/md/pce` 时不 `stat`、不 `open`、不读内容，直接归进对应平台，
+  选中后才解析、取第一个支持的 ROM。**路径推断不出平台的 ZIP 才在扫描期读一次
+  中央目录**认平台（`add_zip_by_content`），认不出来的直接不收录。以前这种 ZIP
+  会落进一个叫「ZIP」的分类占一格平台卡片，那不是平台、是「还没认出来」，
+  已经去掉。支持普通单卷 ZIP 的
+  store(0) / deflate(8)，不支持加密、ZIP64 和多卷。仓库约定目录仍是
+  `/sd/roms/{nes,gb,gbc,snes,md,pce}/`。
+- ⚠️ **扫描裸 ROM 时一个文件都不打开**，平台只按扩展名定、大小只靠 `stat()`。这是实测
+  逼出来的：SD 命令的固定开销远大于传输字节数（本机那张 2 GB 老卡每条命令要
+  40 ms），原来每个文件都 open+读头+seek，39 个游戏扫 14 秒；改成纯 readdir+stat
+  之后 2.8 秒；ZIP 连 stat 也跳过后，旧版扫到 256 项就停时两次实测 2.39～5.52 秒。
+  取消人为数量上限后，同卡完整收录 971 项、5 个平台实测 30.83 秒；增加的时间是
+  遍历剩余目录，不是读取 ZIP 内容。
+  **ROM 头照样验，只是挪到了选中后的装载阶段。**
+  代价：扩展名骗人的文件（尤其通用的 `.bin`）会进到菜单，选中时才报错。
+- ROM 目录没有固定条目上限。`rom_store.c` 在 PSRAM 中按 128、256、512... 动态扩容，
+  扫描结束再缩到实数；只有真实 PSRAM 分配失败才停止。名字和路径逐项稳定分配，
+  不能换回会在 `realloc` 后令现有 entry 指针失效的单块可移动字符串池。
+- 完整扫描后会在卡根目录原子更新 `.gamebox-rom-index`（格式版本 + payload CRC，
+  临时文件和 `.bak` 兜底）。后续启动顺序读缓存，缓存无效自动回退扫描；加删游戏后
+  开机按住 SELECT 强制刷新。不要为“自动检测变化”重新遍历目录，那会把 30 秒启动
+  延迟原样带回来；也不要直接落盘含指针/`size_t` 的 `rom_store_entry_t`。
+- GB / GBC 按扩展名分**只影响菜单分组**：`gbc_emu.c` 根本不读 `entry->system`，
+  gnuboy 自己从 ROM 头 0x143 判 CGB/SGB/DMG（`gnuboy.c:234`）。
+- ⚠️ **`rom_store_load()` 必须经内部 RAM 反弹缓冲，并用 POSIX `open/read`**，不能让
+  stdio `fread` 或 FatFs 直接写 PSRAM。
+  `sdmmc_read_sectors()` 发现目标不是 DMA-capable 就退化成一次一个 512 字节扇区
+  读 + memcpy（IDF 的 `sdmmc_cmd.c`）。本机单扇区读 72 ms —— 4 MiB 卡带这样读要
+  十分钟。即使有内部中转，`fread` 仍会把读请求拆碎：同一个 1 MiB ROM 实测
+  84 秒 / 12 KB/s；换 `read` 后 16 KB 中转为 5.6 秒。中转缓冲按 64→32→16→8→4 KB
+  梯度回退。SNES 特意在 119 KB 内部帧缓冲之前装 ROM；NES 则借用尚未给 PPU 使用的
+  约 63 KB vidbuf。ZIP 解压同样复用这块 DMA RAM：`1943.zip` 的 256 KB ROM 从
+  16 KB 块的 16.87 秒降到 63 KB 块的 7.25 秒。装完再交还，不和运行期内存争用。
+- SNES 的 512 字节拷贝机头只从文件大小就能判出来（整卡带都是 `0x400` 的整数倍），
+  不用开文件。`rom_store_load(entry, extra_bytes, ...)` 仍然直接读进最终可写缓冲，
+  不能先读一份再复制 4 MiB。
+- `loading_screen.c` 在菜单选中后接管默认 288×224 画布。`rom_store.c` 的同步回调
+  按实际字节数推进裸 ROM / ZIP，界面每 5% 才重画一次；不要改成每个 64 KB 块都
+  无条件推屏，4 MiB ROM 会凭空多刷 64 帧并拖慢加载。
+- 所有失败都只让 `rom_store_init()` 返回 0、不 abort：没插卡、卡挂不上、卡上没有
+  合法 ROM，都回退到 `nes_emu.c` 里 `ROM_CHOICE` 选的编译期嵌入 ROM。
+  ⚠️ 目前**没卡时屏幕上没有任何提示**，直接进内置游戏，看起来像坏了。
+
+### 非游戏 UI 的配色
+
+游戏以外的所有界面（开机画面、模式选择、ROM 菜单、加载页、SETTINGS、
+单词学习、Controller Test）只从 `main/display.h` 取色，那里是**唯一入口**，
+分两层：
+
+- **原色层 `C_GVB_*`** —— [gruvbox](https://github.com/morhetz/gruvbox) light
+  主题的完整调色板，名字和上游 palette 一一对应。gruvbox 的 `faded_*` 和
+  `neutral_*` 不是深浅备选，是给两个主题用的：light 主题取 `faded_*`。
+- **语义层 `C_UI_*` / `C_SYS_*`** —— 面（BG/PANEL/PANEL_ALT/LINE/EDGE）、
+  字（FG/FG_DIM/FG_FAINT/FG_INV/FG_INV_DIM）、选中态（SEL/SEL_EDGE）、
+  状态（OK/BAD/WARN/INFO/GOLD/BAR）、六个平台各自的色相（`C_SYS_NES` 等，
+  splash 的平台标签和 rom_menu 平台卡片的色条共用）。
+
+⚠ **画界面只用语义层**，别直接摸 `C_GVB_*`，更不要自己 `RGB565()` 一个新色。
+以前 `main.c` / `rom_menu.c` 各抄了一份配色约定注释、`word_study.c` 又自己
+`#define` 了三个色，就是没有这层的结果。`C_RED`/`C_GREEN` 那组原色只留给
+`SHOW_DISPLAY_SELFTEST` 诊断图和 `gbc_emu.c` 的存档提示——那两处要的是
+「一眼认出通道对不对」，不该跟着主题走。
 
 ### 输入
 
@@ -146,10 +217,11 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
 `-O3` 是性能关键。
 
 ⚠️ **本仓库只分发源码，不分发构建产物（`.bin`），这是有意的许可决定。**
-`main/` 是 GPL v2（根 `LICENSE`），四个核心各自保持上游许可。链接出来的固件
+`main/` 是 GPL v2（根 `LICENSE`），五个核心各自保持上游许可。链接出来的固件
 二进制有两处不可回避的不兼容：Snes9x 的「仅限非商业」附加限制与 GPL 冲突
 （注意方向 —— Snes9x 本身允许非商业分发，是 GPL 不许附加限制）；nofrendo 是
 GPLv2-**only**（源文件无 or later）而 gwenesis 是 GPL v3+/AGPL v3，两者不能合并。
+（pce-go 是 GPL v2，和 nofrendo/gnuboy 同阵营，不改变这个结论。）
 所以**不要往仓库里提交 `.bin`/`.elf`，也不要加发布二进制的 CI**。
 完整推导和三处上游元数据矛盾见 `README.md` 的「授权」一节。
 
@@ -159,10 +231,10 @@ GPLv2-**only**（源文件无 or later）而 gwenesis 是 GPL v3+/AGPL v3，两�
 |---|---|
 | `DISP_FB_W` / `DISP_FB_H`（display.h） | `nes_emu.c` 的三个 `_Static_assert`；`display.c` 的 `BAND_LINES`（最好整除 `DISP_FB_H`） |
 | `DISP_H` | `DISP_GAP_Y` 一起改。只改一个的症状是画面偏移 + 有一条边永远刷不到 |
-| `partitions.csv` 的 roms offset | 顶层 `CMakeLists.txt` 的 `ROMS_OFFSET` |
+| `partitions.csv` 的 word_audio offset | 顶层 `CMakeLists.txt` 的 `WORD_AUDIO_OFFSET` |
 | `pack_roms.py` 的 `NAME_LEN` | `rom_store.h` 的 `ROM_STORE_NAME_LEN` |
 | 加 `main/roms/*.nes` | `main/CMakeLists.txt` 的 `EMBED_FILES` + `nes_emu.c` 的 `ROM_CHOICE` 分支和 `_binary_<名字>_nes_start` 符号名（非字母数字→下划线） |
-| 菜单要显示新汉字 | 不用管了：`main/menu_font.c` 收了 GB2312 全部 6763 字。真撞上 GB2312 之外的字（繁体、假名）才需要往 `tools/gen_menu_font.py` 的 `EXTRA_TEXT` 加一个字并重跑（要 unifont 源文件，不入库） |
+| 菜单要显示新汉字 | 不用管了：`main/menu_font.c` 收了 Unifont 的 95 个 8x16 ASCII 和 GB2312 全部 6763 个 16x16 汉字。真撞上 GB2312 之外的字（繁体、假名）才需要往 `tools/gen_menu_font.py` 的 `EXTRA_TEXT` 加一个字并重跑（要 unifont 源文件，不入库） |
 | `main/` 新增 .c 或用新驱动 | `main/CMakeLists.txt` 的 `SRCS` 和 `REQUIRES`（显式写了 REQUIRES 就不再自动依赖全部组件） |
 
 ## 硬件排障的教训
@@ -176,8 +248,11 @@ GPLv2-**only**（源文件无 or later）而 gwenesis 是 GPL v3+/AGPL v3，两�
 
 选脚时永久避开：GPIO33~37（Octal PSRAM）、19/20（原生 USB）、0/3/45/46（strapping）。
 屏的 SCK/MOSI/CS 必须是 SPI2 的 IOMUX 原生脚（12/11/10），换脚会降到 40 MHz。
-摇杆两轴必须在 ADC1 范围（GPIO1~10），当前用 GPIO1/2；Shield E/F 小键
-用 GPIO21/47 做 START/SELECT（7/8 本机实测异常后改脚）。
+摇杆两轴必须在 ADC1 范围（GPIO1~10），当前用 GPIO1/2；Shield E/F 小键本机故障，
+固件改用大键 A/D 做 START/SELECT（原 7/8 与后试的 21/47 均异常，请拔掉 E/F 线）。
+TF 卡走 SPI3（GPIO39/41/40/42 = CLK/MOSI/MISO/CS），**不能挂 SPI2** —— 那条总线被
+ST7789 的条带流式推屏独占，见 `docs/hardware.md` §10。剩下完全自由的只有 7/8/21/38/47，
+加模拟量输入则只剩 GPIO3（ADC1 里唯一空位）。
 
 ## 学习复盘文档（用户要求，长期有效）
 

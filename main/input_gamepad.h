@@ -99,10 +99,8 @@ enum {
 
 /* ============ 摇杆可视化 ============
  *
- * 开机时把摇杆位置和六个按键状态实时画到屏上，同时按
- * SNES A+B（Shield B+C，右+下）退出，然后照常进选单。
- * 默认开着 —— 它同时也是开机自检，一眼就能确认手柄接好了没有。
- * 嫌开机多一步就改成 0。
+ * SETTINGS → Controller Test 调用 input_gamepad_show()：摇杆位置 + 按键高亮 +
+ * MAX98357 beep 自检。同时按 Shield B+C（游戏 A+B）退出。
  *
  * 画的就是 poll() 用的同一套坐标，所以「点跟着手走」= 映射正确：
  * 推右点往右、推上点往上。屏下方同时打出两路原始 ADC 读数 ——
@@ -122,6 +120,6 @@ void input_gamepad_init(void);
 uint16_t input_gamepad_poll(void);
 
 /* 摇杆/按键可视化 + MAX98357 提示音自检。
- * 上键 A=START（beep）；左键 D=SELECT（兼调音量）；B+C 退出。
- * E/F 小键本机停用。需要 display_init() 已跑过。 */
+ * 本机 Shield E/F 故障：上键 A=START（beep）、左键 D=SELECT（兼调音量）；
+ * B+C 退出。SETTINGS 里的 Controller Test 会调它。 */
 void input_gamepad_show(void);

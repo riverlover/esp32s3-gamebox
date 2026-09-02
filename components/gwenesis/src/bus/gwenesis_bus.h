@@ -22,6 +22,7 @@ __license__ = "GPLv3"
 #pragma once
 
 #include <stdio.h>
+#include <stdbool.h>
 #include <string.h>
 
 #define MAX_ROM_SIZE 0x800000
@@ -88,10 +89,11 @@ enum gwenesis_bus_pad_button
 #if GNW_TARGET_MARIO != 0 | GNW_TARGET_ZELDA != 0
 void load_cartridge();
 #else
-void load_cartridge(unsigned char *buffer, size_t size);
+bool load_cartridge(unsigned char *buffer, size_t size);
 #endif
 
-void power_on();
+bool gwenesis_bus_reserve_internal(void);
+bool power_on();
 void reset_emulation();
 void set_region();
 

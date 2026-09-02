@@ -2,7 +2,8 @@
 
 ESP32-S3-DevKitC-1 兼容板（N16R8）+ ST7789 SPI 屏（240×320，横屏 320×240）。
 
-**目标**：在这块板上运行 NES、Game Boy、Game Boy Color、SNES 和 Genesis 游戏。
+**目标**：在这块板上运行 NES、Game Boy、Game Boy Color、SNES 和 Genesis 游戏，
+并提供不依赖网络的儿童英语学习模式。
 
 硬件详情见 [`docs/hardware.md`](docs/hardware.md)；Flash、内部 SRAM、PSRAM 和各条
 模拟器的完整分配账见 [`docs/memory.md`](docs/memory.md)。
@@ -33,12 +34,18 @@ ESP32-S3-DevKitC-1 兼容板（N16R8）+ ST7789 SPI 屏（240×320，横屏 320�
       可玩帧率**：SMW 45/60 fps、Mario Kart 50/60 fps，大量热数据和渲染中间结果
       塞不进约 179 KB 的可用内部 SRAM。另外 Super FX / SA-1 / S-DD1 没有实现，
       这类卡带会黑屏。详见 [`components/snes9x/README.gamebox.md`](components/snes9x/README.gamebox.md)
-- [x] SMW 即时存档：SELECT + 右方大键（丝印 B，代码里的 SNES A）长按 1 秒，
-      RST 后启动同一 ROM 自动恢复；960 KiB FAT + wear levelling，双槽交替写
-      和 CRC 防断电损坏
-- [x] 全局退出键：任意模拟器里 SELECT + START 长按 1 秒，`esp_restart()`
-      软重启回到 ROM 选单。没有模拟器落盘卡带电池 SRAM，重启不丢数据
-- [x] 27 款游戏逐条 Deflate 后镜像约 10.61 MiB；ROM 分区 13 MiB
+- [x] retro-go 风格四槽即时存档：NES、GB/GBC、SNES、Genesis 游戏中同时按
+      SELECT + X 打开统一菜单，可 Save & Continue、Save & Quit、Load game、
+      软/硬 Reset 或 Quit；状态按平台和 ROM CRC 写入 TF 卡，临时文件 + 备份改名
+      避免写卡中断直接覆盖唯一好档
+- [x] 苏州小学译林版单词学习：三至六年级按上/下册选择；三上按教材 Word lists
+      完整收录 127 项（包含带 * 的非核心词），其余分册暂为每单元 8 个核心词；
+      可选单元进行认读和测验，每册用独立 NVS 键保存掌握进度
+- [x] WORDS 离线英式发音：Daniel（en_GB）首次自动读、X 重播；524 个不重复
+      词条压成 3.62 MiB IMA ADPCM，语音包缺失时学习功能仍可用
+- [x] WORDS QUIZ 即时声音反馈：答对播放四级上升 8-bit 琶音，答错播放三级
+      下降掌机提示音；本单元全部答对时在结果页播放专属过关短曲
+- [x] WORDS QUIZ 顶部逐题反馈：答对格变绿、答错格变红，未答题保持原高亮
 
 ROM 说明：商业 NES/GB/GBC/SNES/Genesis ROM 都是版权物，**本仓库不包含**，需由使用者自备。
 随仓库分发的三个 `.nes` 是 nofrendo 测试套件里的公有领域 homebrew，用于验证。
@@ -47,12 +54,16 @@ ROM 说明：商业 NES/GB/GBC/SNES/Genesis ROM 都是版权物，**本仓库不
 
 | 文件 | 作用 |
 |---|---|
-| `main/main.c` | 启动流程：板级信息 → 初始化屏 → 启动模拟器 |
+| `main/main.c` | 启动流程：板级信息 → 初始化屏 → GAME / WORDS / SETTINGS 分流 |
+| `main/word_study.c` | 教材/单元选择、单词认读/三选一测验与分册 NVS 进度 |
+| `main/word_study_data.c` | 译林版三至六年级上下册词表；三上为教材完整表，其余暂为核心词 |
+| `main/word_audio.c` | 读取独立分区中的英式发音索引，流式解码 IMA ADPCM 并异步播放 |
+| `tools/build_word_audio.py` | 用 macOS Daniel 语音生成 24 kHz 英式发音包 |
 | `main/display.c` | ST7789 显示层。条带流式推屏 + 核 1 推屏任务，对上层只暴露「按条带填像素」 |
 | `main/nes_emu.c` | 适配层。把 nofrendo 的 8 位调色板画面逐条带转成 RGB565 推屏 |
 | `main/gbc_emu.c` | GB/GBC 适配层。把 160×144 大端 RGB565 等比放大到 240×216，并接入公共输入/音频 |
 | `main/genesis_emu.c` | retro-go Gwenesis 单核宿主层。320×241 索引帧以原生 320×224 送屏，并混合 YM2612/PSG 音频 |
-| `roms/` | 本地游戏库；`.nes/.gb/.gbc/.sfc/.smc/.md/.bin` 会逐条压缩进 ROM 分区镜像，不入库 |
+| TF 卡 `/roms/` | 本地游戏库；支持 `.nes/.gb/.gbc/.sfc/.smc/.md/.bin/.zip`，不入库 |
 | `main/roms/` | 内置 ROM（公有领域测试 ROM） |
 | `components/nofrendo/` | NES 模拟器核心，取自 [retro-go](https://github.com/ducalex/retro-go)，**未改动源码** |
 | `components/gnuboy/` | GB/GBC 模拟器核心，取自 Retro-Go；宿主适配放在 `main/` |
@@ -144,6 +155,35 @@ malloc 一块内部缓冲再 memcpy —— 数据最后照样落在内部 RAM，
 **教训：一次只改一个变量的对照实验（拔掉一根线看行为变不变），
 比任何隔着几层的推理都可靠。硬件问题先做实验，再动代码。**
 
+### 排障记录：TF 卡「写入报成功但什么都没落盘」（已解决）
+
+**症状**：板子这边 SD 卡能挂载、能读根目录、容量数字全对（185 MB 可用，和 Mac 读数
+一致），但写任何文件都失败——`fopen("wb")` 成功、`fwrite` 返回完整字节数、
+`fclose` 返回 0，紧接着 `stat()` 就报 `ENOENT`。20 MHz 和 4 MHz 表现完全一样。
+
+**根因**：卡坏了。它对写操作回 ACK、报成功，但什么都不提交；读永远返回原始内容。
+这是 SD 卡寿命到头（或假卡）的典型失效模式——连整盘 `diskutil eraseVolume`
+都会被静默吞掉。换一张卡，同一套接线、同一版固件，全部一次通过。
+
+⚠️ **走过的最大一段弯路：把卡插到 Mac 上验证，得出了完全相反的结论。**
+`echo > test.txt` 之后 `cat` 能读出内容、8 MB `dd` 跑出 13 MB/s，于是判定
+「卡是好的，问题在固件」，掉头去查 FATFS 配置。全是 **page cache 在撒谎**，
+数据压根没离开内存。真相要靠 `diskutil unmountDisk` + `mountDisk` 强制清缓存后再看：
+卷名没变、已用空间没变、刚建的文件消失、2017 年的旧内容原样还在。
+
+**教训：查嵌入式端的存储问题时，宿主 OS 的文件系统缓存会把失败伪装成成功。
+没有 page cache 的 MCU 反而是更诚实的证人——它报 `ENOENT` 的时候，
+第一个该怀疑的是介质，不是它。**
+
+对照实验这次同样是决定性的那一步：同一套接线、同一版固件、只换一张卡就全通过，
+唯一变量锁死在卡上。和上面摇杆那次是同一个方法。
+
+顺带一个诊断陷阱，值得单独记：**`fwrite` 只写进 stdio 缓冲，真正落盘发生在
+`fclose` 的 flush**。第一版自检没检查 `fclose` 的返回值，于是写失败一路溜到
+下一个 `fopen` 才暴露，报成了「刚写的文件读不开」——错误信息指向了完全无关的
+地方，白查一轮。现在 `sd_card.c` 检查 `fclose`，并把 `stat()`（目录项落没落盘）
+和回读（数据对不对）分开报。
+
 ### ⚠️ 克隆后先补 ROM
 
 `main/roms/smb.nes` 是版权物，**不在仓库里**（见 `.gitignore`）。
@@ -155,34 +195,100 @@ malloc 一块内部缓冲再 memcpy —— 数据最后照样落在内部 RAM，
 
 ### 换 ROM
 
-日常游戏库放在顶层 `roms/`：支持 `.nes`、`.gb`、`.gbc`、`.sfc`、`.smc`、`.md`、`.bin`，
-以及装着其中一个的 `.zip`（自动取出，显示名用 zip 内部那个文件名）。加、删、
-改名之后在仓库根跑 **`./flash-roms.sh`**（或 `idf.py flash-roms`）就行——它会先把每个游戏独立压成 raw Deflate
-重新生成 `build/roms.bin`，再单独烧入，不用另外跑一次 `idf.py build`。开机菜单只读取目录；确认游戏后才把选中的一份解到
-PSRAM，其他游戏不占运行内存。换游戏仍按板子 RST 重启，避免在模拟器之间留下状态。
-本机 macOS 环境激活、端口、BOOT/RESET 细节见 [`docs/journey/esp-idf-toolchain/`](docs/journey/esp-idf-toolchain/)。
+**游戏放在 TF 卡上**，拔下来插电脑拷进去就行，不用重烧固件。支持 `.nes`、`.gb`、
+`.gbc`、`.sfc`、`.smc`、`.md`、`.bin`，也可以把这些 ROM 直接装在 `.zip` 里。
+约定的目录结构是：
+（本机 macOS 编译烧录细节见 [`docs/journey/esp-idf-toolchain/`](docs/journey/esp-idf-toolchain/)。
+旧的 `./flash-roms.sh` 只会提示改走 TF，不再烧分区。）
 
-开机选单分两级：**平台选择页**（NES / GB / GBC / SNES / MD，各带游戏数）
-按 A 进入该平台的**游戏列表**，在列表里按 B 退回平台页。列表编号每个平台都
-从 01 起，左右仍是整页翻页。
+```
+/sd/roms/nes/    /sd/roms/gb/    /sd/roms/gbc/    /sd/roms/snes/    /sd/roms/md/
+```
 
-音量和背光在标题右侧显示当前档位，各按一次加 10%、到顶再按绕回最低：
+裸 ROM 的目录名纯粹是给人看的，平台按扩展名归类，放错目录照样能玩。想临时下架
+一批就挪进 `removed-YYYYMMDD/`——前缀是 `removed` / `_` / `.` 的目录整棵跳过。
+
+ZIP 为了开机快，扫描时不会打开或检查内容，直接用外层文件名显示。放在推荐的
+`nes/gb/gbc/snes/md/` 目录下会先归到对应平台；其他目录下先显示在 ZIP 分类，选中后
+才识别并解压第一个受支持的 ROM。支持普通单卷 ZIP 的 store/deflate，不支持加密、
+ZIP64、多卷、RAR 或 7z；不支持的包只会在选中时提示错误，不拖慢开机。
+
+游戏目录没有固定数量上限，会在 PSRAM 中按需扩容，直到收录完整张卡；只有真实
+内存不足才会停止。游戏越多，开机遍历全部文件名所需时间也越长——当前这张高延迟
+EZSD1 卡实测收录 971 个游戏、5 个平台需要 30.83 秒，期间仍不会打开任何 ZIP。
+
+第一次完整扫描后会在卡根目录写入隐藏文件 `.gamebox-rom-index`。以后开机直接顺序
+读取这份带版本号和 CRC 的目录缓存，不再逐个遍历近千个文件；缓存缺失或损坏会自动
+回退完整扫描。往卡里加、删或改名游戏后，**按住 SELECT（Shield F）再开机/复位**，
+直到串口出现“检测到 SELECT”即可松手，设备会忽略旧缓存、重扫并原子更新索引。
+直接在电脑上删除 `.gamebox-rom-index` 也能触发重建。
+
+⚠️ **显示名来自文件名**，会自动剥掉 `(Japan, USA)` `[!]` 这类标记和开头的 `NN_`
+排序前缀。`Super Mario World (USA).sfc` 在菜单里显示成 `Super Mario World`。
+
+换游戏仍按板子 RST 重启，避免在模拟器之间留下状态。
+
+#### 卡的选择很影响体验
+
+ROM 是选中之后才从卡上整个读进 PSRAM 的；ZIP 也在这时才识别和解压，所以
+**卡的速度直接决定进游戏要等多久**。
+加载页会显示当前游戏、阶段和百分比；裸 ROM 按已读取字节推进，ZIP 依次显示
+“识别 ZIP / 解压 ZIP / 校验 ROM / 准备启动”。进度最多每 5% 刷新一次，避免
+为了动画反过来拖慢读卡，加载期间也会明确提示不要拔 TF 卡。
+本机拿一张 2 GB 的老 SDSC 卡实测：每条 SD 命令有约 **40 ms** 的固定响应延迟
+（正常卡应当 <1 ms），结果开机扫 39 个游戏要 2.8 秒，1 MB 的塞尔达要读 8 秒。
+把 SPI 时钟从 20 MHz 降到 4 MHz 做过单变量对照，固定开销纹丝不动（38→40 ms），
+只有传输部分按比例变慢——**所以那是卡自己的延迟，不是接线或缺上拉，降频治不了。**
+
+换一张正常的 SDHC 卡这些数字会小一个量级。想量自己手上这张，把
+`main/sd_card.c` 的 `SD_BENCHMARK` 打开，判读方法写在那个函数的注释里。
+
+开机首页先选 **GAME / WORDS / SETTINGS**：GAME 进入游戏，WORDS 进入离线单词学习，
+SETTINGS 调节音量、背光并进入手柄诊断。游戏选单分两级：**平台选择页**
+（NES / GB / GBC / SNES / MD，各带游戏数）
+采用 2×3 卡片网格，按 A 进入该平台的**游戏列表**；列表每页 8 项，编号独立显示
+为徽标，右上角同时显示平台游戏总数和页码。在列表里按 B 退回平台页，编号每个
+平台都从 01 起，左右仍是整页翻页。
 
 | 键 | 平台选择页 | 游戏列表 |
 |---|---|---|
 | A / START | 进入该平台 | 启动游戏 |
-| B（SNES B / Shield C） | 声音 0~100 | **返回平台页** |
-| Y（SNES Y / Shield D） | 亮度 5~100 | 亮度 5~100 |
+| B（SNES B / Shield C） | 返回 GAME / WORDS / SETTINGS | **返回平台页** |
 | 摇杆上下 | 选平台 | 选游戏 |
 | 摇杆左右 | — | 翻页 |
 
-B 在两页含义不同：平台页是顶层没有上一级可退，B 空着正好继续当音量键。
-两页页脚各自写明自己的键。音量因此只在平台页可调 —— 开机必然经过那一页，
-中途想改也可以按 B 退回去。两项都只对本次开机有效，RST 或重新上电恢复默认。
+B 在两页始终返回上一级：游戏列表退到平台页，平台页退到 GAME / WORDS / SETTINGS。
 
-`main/roms/` 只用于 ROM 分区不可用时的 NES 编译期回退。只有要更换这个回退游戏时，
-才需要同步修改 `main/CMakeLists.txt` 的 `EMBED_FILES` 和 `main/nes_emu.c` 的
-`ROM_CHOICE`。
+SETTINGS 采用与主页一致的 gruvbox light retro-go Options 风格：上下选择
+`Brightness`、`Volume` 或 `Controller Test`，左右调节当前档位；调音量时会立即
+播放一次 `hello` 试听，A 进入手柄测试，B 返回首页。设置只对本次开机有效，RST
+或重新上电恢复默认。
+
+### 单词学习（WORDS）
+
+面向苏州小学三至六年级，按译林版教材的年级、上/下册和 Unit 1–8 选择；三上
+完整收录教材 Word lists 第 78～80 页的 127 项，包含带 * 的非核心词，各单元分别为
+13/11/17/9/18/12/31/16 项；其余分册暂时每单元内置 8 个核心词。词表不依赖 TF 卡。
+每轮严格学习所选单元的全部词条：先看
+英文并猜意思，按 A 翻卡查看中文；看完后对同一组词做三选一。答对会提升掌握度，
+答错会回到待复习，经过三次成功提取才计入“已掌握”。进度按教材版本和词分别保存
+在 NVS，换单元或断电后仍保留。
+
+| 页面 | 操作 |
+|---|---|
+| 教材 / 单元选择 | 方向键选择，A / START 确认；B / SELECT 返回上一级 |
+| 单词正面 | A / START 翻开；SELECT 返回所选单元首页 |
+| 单词背面 | A / START 下一张；B 盖回去再想一次 |
+| 三选一 | 上下选择，A / START 确认；答题后再按 A 继续 |
+| 本轮结算 | A / START 再来一轮；B / SELECT 返回所选单元首页 |
+
+`main/roms/` 只用于 TF 卡不可用时的 NES 编译期回退——没插卡、卡挂不上、或者卡上
+一个合法 ROM 都没有时，会直接进这个内置游戏（当前是魂斗罗）。只有要更换这个
+回退游戏时，才需要同步修改 `main/CMakeLists.txt` 的 `EMBED_FILES` 和
+`main/nes_emu.c` 的 `ROM_CHOICE`。
+
+⚠️ **已知问题**：没插卡时屏幕上没有任何提示，直接跳进内置游戏，看起来像坏了。
+串口有日志。该加一屏「未检测到 TF 卡」的提示。
 
 ### 操作（手柄）
 
@@ -194,26 +300,24 @@ JoyStick Shield，接线见「接线」一节。飞线手柄、USB 手柄、串�
 | 上方大键 | A | X | 无 | 无 |
 | 左方大键 | D | Y | C | 无 |
 | 右方大键 | B | A | B | A |
-| 下方大键 | C | B | A | B（选单中：平台页调声音 / 列表页返回） |
+| 下方大键 | C | B（选单中：返回上一级） | A | B（选单中：返回上一级） |
 | 左侧小键 | F | SELECT | SELECT |
 | 右侧小键 | E | START | START |
 | 摇杆 | — | 上下左右 | 上下左右 |
 
-SNES 的 Super Mario World 里，同时长按小按键 F（SELECT）和右方大键（丝印 B，代码里
-映射成 `GAMEPAD_BIT_A`）1 秒会冻结画面并显示 `SAVING...`，看到 `SAVE OK` 后即可安全
-按 RST。下次重新选择同一份 SMW ROM 会自动回到保存瞬间。存档与 ROM CRC 绑定，不会
-加载到同名改版或其他区域版本；目前只有 SMW 启用此功能，其他游戏不会占用这份全局
-即时存档。需要恢复双槽中的上一份时，在菜单进入 SMW 时按住上方大键 X，再按 A 或
-START 确认；上一份不存在或损坏时仍会退回最新一份，不会清空或覆盖任何存档。想从头
-开始时，按住左方大键 Y，再按 A 或 START 进入 SMW，确认后即可松开；本次会跳过自动
-恢复，但仍保留原来的两份存档。确认新进度后再次长按 SELECT + 右方大键保存，新状态
-就会成为下次自动恢复的最新存档。
+**游戏内菜单 / 即时存档**：不分平台，游戏中同时按小按键 F（SELECT）和上方大键 A（X）
+即可打开菜单，不需要长按。摇杆上下选择，A 确认，B 返回游戏或上一级：
 
-**退出到 ROM 选单**：不分平台，游戏中同时长按小按键 F（SELECT）和 E（START）1 秒
-会显示退出提示（SNES/GB/GBC 有画面提示，NES/Genesis 直接重启）并触发 `esp_restart()`
-软重启，回到开机选单重新选游戏。这是系统级组合键，长按期间该组合不会传给正在跑的
-游戏；没有任何模拟器把卡带电池 SRAM 落盘，所以重启不会丢失除上面这份 SMW 即时存档
-之外的东西——本来也没有其它能被丢的存档。
+- `SAVE & CONTINUE`：选择 SLOT 0～3，保存后继续游戏；
+- `SAVE & QUIT`：存档成功后软重启回开机选单，失败则留在菜单；
+- `LOAD GAME`：从四个槽中恢复，空槽会标成 `EMPTY`；
+- `RESET`：再选软重置或硬重置；
+- `QUIT`：不保存，软重启回开机选单。
+
+槽文件放在 `/gamebox/saves/{nes,gb,gbc,snes,md}/<ROM CRC>.sav0`～`.sav3`。
+同名改版、不同区域版或重命名后的同一 ROM 都按内容 CRC 区分/识别。保存先完整写 `.tmp`，
+再用 `.bak` 保护旧档后改名提交；若上次恰好在改名中间断电，读档会回退 `.bak`。
+GB/GBC 和 NES 的核心快照也包含卡带 SRAM，因此 Pokemon 等游戏内电池进度会随槽一起保存。
 
 上电时**手别碰摇杆**：开机要采 16 次静止读数做中位校准，碰着会被判定为
 「没接好」而整路禁用（按键不受影响）。
@@ -229,13 +333,18 @@ idf.py -p /dev/cu.usbserial-A5069RR4 monitor
 
 **焦点要在 monitor 窗口里**，然后：
 
+（`U`/`I` 是给 SNES 补的两颗面键。低 8 位和 NES 手柄一致，NES/GB/GBC 会忽略这两位。）
+
 | 键 | 作用 |
 |---|---|
 | `W` `A` `S` `D` 或方向键 | 上下左右 |
 | `K` 或 `Z` | A（跳） |
-| `J` 或 `X` | 选单：平台页调声音、列表页返回；游戏：B（跑 / 发射） |
+| `J` 或 `X` | 选单：返回上一级；游戏：B（跑 / 发射） |
+| `U` | 游戏：SNES X |
+| `I` | SNES Y |
 | 回车 | START |
 | Tab | SELECT |
+| `Tab` + `U` | 打开游戏内菜单（SELECT + X） |
 | 空格 | 全部松开（按键卡住时用） |
 | `Ctrl+]` | 退出 monitor |
 
@@ -401,7 +510,7 @@ NES 画面对不上的组合），以及 `display.c` 的 `BAND_LINES`（最好�
 `LICENSE`。选 GPL v2 是被约束出来的：`main/` 链接 GPLv2-only 的 nofrendo，
 再宽松的选择都会让合并作品不合规。
 
-`components/` 下的四个模拟器核心各自保持上游许可，**没有被本项目重新授权**：
+`components/` 下的五个模拟器核心各自保持上游许可，**没有被本项目重新授权**：
 
 | 组件 | 上游 | 许可 | 备注 |
 |---|---|---|---|
@@ -409,9 +518,10 @@ NES 画面对不上的组合），以及 `display.c` 的 `BAND_LINES`（最好�
 | `gnuboy/` | retro-go | `COPYING` 是 GPL v2 | ⚠ 源文件**完全没有许可头**，只能靠 COPYING 推定 |
 | `snes9x/` | retro-go → libretro/snes9x2005 | `src/LICENSE` 是拼接的：前半 ndssfc 为 GPL v2+，后半是 Snes9x 自有许可 | 见下 |
 | `gwenesis/` | retro-go | 目录 `LICENSE` 是 **AGPL v3** | ⚠ 各源码文件头写的是 **GPL v3 or later**，与目录 LICENSE 不一致 |
+| `pce-go/` | retro-go → [HuExpress](https://github.com/kallisti5/huexpress) → Hu-Go! → BERO 的 PCE 模拟器 | `COPYING` 是 GPL v2 | ⚠ 和 gnuboy 一样，13 个源文件**完全没有许可头**，只能靠 COPYING 推定。作者链条见 `CREDITS` |
 
-`main/menu_font.c` 的字形来自 GNU Unifont 17.0.04（SIL OFL 1.1，或 GPL v2+ 带
-字体嵌入例外），没有许可问题。
+菜单里的 8×16 半角英文和 16×16 全角中文都来自 GNU Unifont 17.0.04，字高和
+基线一致。该字体采用 SIL OFL 1.1，或 GPL v2+ 带字体嵌入例外，没有许可问题。
 
 ### ⚠ 为什么本仓库不分发构建产物
 
@@ -429,6 +539,9 @@ NES 画面对不上的组合），以及 `display.c` 的 `BAND_LINES`（最好�
 2. **GPLv2-only 和 GPLv3/AGPLv3 不能合并。** nofrendo 的源文件写死 version 2、
    没有 or later；gwenesis 是 GPL v3+ / AGPL v3。**就算删掉 snes9x，这个组合
    仍然不合规。**
+
+   加入 pce-go 不改变这个结论：它是 GPL v2，和 nofrendo/gnuboy 同一阵营，
+   冲突的仍然是 snes9x 和 gwenesis 那两条。
 
 加上上表里三处上游元数据自相矛盾（nofrendo 头 vs COPYING、gnuboy 没有头、
 gwenesis 目录 vs 头），每一条都得先定性才谈得上发布二进制。

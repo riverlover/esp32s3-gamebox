@@ -60,31 +60,27 @@ Snes9x 的 `Memory.SRAM` 是被模拟卡带的电池存档 RAM，只是一个 64
 
 ## 3. 16 MiB Flash 怎么使用
 
-Flash 和 PSRAM 是两套独立资源。ROM 分区的 mmap 只消耗 Flash 地址映射窗口和少量页表，
-不会把整个 ROM 镜像复制到 PSRAM；选中游戏后只解压那一个 ROM。
+Flash 和 PSRAM 是两套独立资源。游戏已经全部从 TF 卡装载；原 ROM data 分区
+改为单词英式发音包，播放时只流式读取很小的 ADPCM 块。
 
 | 分区 | 起点 | 分配大小 | 当前用途 |
 |---|---:|---:|---|
 | NVS | `0x009000` | 24 KiB | ESP-IDF 预留的持久配置空间 |
 | PHY init | `0x00F000` | 4 KiB | ESP-IDF PHY 数据 |
 | factory app | `0x010000` | 2 MiB | 含 Gwenesis 的固件约 1.55 MiB，余约 457 KiB |
-| roms | `0x210000` | 13 MiB | 27 个 ROM；19.16 MiB 原始数据压成约 10.61 MiB |
-| snes_save | `0xF10000` | 960 KiB | SMW 即时存档，FAT + wear levelling |
+| word_audio | `0x210000` | 13.94 MiB | 524 个英式发音；24 kHz IMA ADPCM 约 3.62 MiB |
 
-`roms` 分区止于 `0xF10000`，其后的 960 KiB 已全部分给 `snes_save`。ROM 镜像只在
-加、删或替换游戏时用 `idf.py flash-roms` 单独烧录，普通 `idf.py flash` 不更新它；
-普通烧固件会更新分区表，但不会主动擦除已有的存档分区。
+即时存档统一放在 TF 卡 `/gamebox/saves/<平台>/`，Flash 不再划游戏专用分区。
+`word_audio` 从 `0x210000` 连续使用到 16 MiB Flash 末尾。语音包只在教材词表或合成参数
+变化时用 `idf.py flash-word-audio` 单独烧录，普通 `idf.py flash` 不更新它。
 
-新镜像把每个游戏独立保存为 raw Deflate，菜单阶段只读 mmap 目录；NES、GB/GBC、Genesis 在
-确认后把选中的 ROM 解到 PSRAM，核心的 bank 指针长期引用这块缓冲。SNES 的装载流程
-还会就地改写映射区域，因此先释放 Snes9x 贪心申请的 6 MiB ROM 缓冲，再直接解压到
-带映射余量的最终缓冲；不能先解压一份再复制，否则 4 MiB 卡带会耗尽 8 MiB PSRAM。
-Genesis 的 68000 核会原地交换 ROM 字节序，因此即使某条 ROM 压缩后没有变小，也会
-强制复制到可写 PSRAM，绝不修改 flash mmap。
+发音索引只有约 8.2 KiB，进入 WORDS 后放在 PSRAM；每次从 flash 读取 256 字节，
+解码成 20 ms PCM 包送公共 I2S。返回首页时释放索引、播放任务和 I2S，随后进入
+Genesis 才能按它自己的约 26.4 kHz 重新配置，不能让 WORDS 的 24 kHz 通道常驻。
 
-SMW 单份未压缩即时状态固定为 365,120 字节（356.6 KiB）。存档层使用两个交替文件：
-写新槽期间保留上一槽，完整关闭文件、重新读取并校验 CRC 后才提交元数据。RST 或断电
-发生在保存中途时，下次会回退到上一份；ROM CRC 和格式版本不匹配时拒绝加载。
+四个模拟器各保留核心自己的快照格式，每个 ROM 提供四个槽。宿主先写 `.tmp`，再把
+旧正式档改名为 `.bak`，最后提交新档；保存中途复位不会直接覆盖旧档，正式档读取失败
+时还会尝试备份。目录和文件名同时包含平台与 ROM CRC，不会把另一份卡带的状态误加载。
 
 ## 4. 公共显示内存
 
@@ -146,7 +142,63 @@ Genesis、释放 NES 预留内存后才申请，仍放片内。**只改 M68K RAM
 
 所以 GB/GBC 明确占用的 PSRAM 下限约为 90 KiB；实际值还要加卡带 RAM 和普通 heap。
 
-### 5.4 SNES，`SNES_MEM_PROFILE=0`
+### 5.4 PC Engine
+
+| 对象 | 大小 | 位置 | 原因 |
+|---|---:|---|---|
+| 368×242 的 8 位索引帧（gfx.c 画） | 89,088 B ≈ 87 KiB | **强制片内** | 逐扫描线读写的最热内存；参照 NES vidbuf 放 PSRAM 时 PPU 从 2 ms 涨到 8.5 ms 的实测 |
+| 同尺寸 PSRAM 镜像（核 1 读） | 89,088 B ≈ 87 KiB | 强制 PSRAM | 每帧 memcpy 过去，只被顺序读一遍 |
+| `PCE.VRAM` | 64 KiB | 通常 PSRAM | 32768 个 16 位字 |
+| `PCE.RAM` | 8 KiB | 通常优先片内 | 不大于 16 KiB 阈值 |
+| `PCE.ExRAM` | 32 KiB | 通常 PSRAM | 只有卡带自带 RAM 的游戏才分配（Populous） |
+| `MemoryMapR/W` | 2 × 1 KiB | 通常优先片内 | 各 256 个 bank 指针 |
+| ROM | 128 KiB ~ 2.5 MiB | PSRAM | 由 `rom_store_load()` 读入，之后所有权移交 pce-go |
+| 调色板 + 音频缓冲 | 512 B + 1,600 B | 片内静态 | `pce_emu.c` 的 `s_palette` / `s_audio` |
+
+帧缓冲多分配的那 32 B 是买断上游的边界擦写，推导见 `main/pce_emu.c` 文件头。
+
+**为什么不是两块片内缓冲**：试过，凑不出来。分配掉第一块 87 KiB 之后片内
+还剩 129 KiB，但**最大连续块只有 40 KiB** —— 长期存活的分配（推屏条带、任务栈、
+SD/I2S 驱动）把 heap_init 报告的那个 230 KiB 区切碎了。把帧缓冲挪到
+`rom_store_load()` **之前**分配也没用（那样至少能让读盘借走这块 87 KiB 当
+DMA 中转，见 `pce_emu.c`），仍然只有一块。
+
+所以改成「片内画 + PSRAM 镜像」：每帧画完 `memcpy` 87 KiB 到 PSRAM 再交给核 1，
+核 0 立刻接着画下一帧。本机实测 `1943改`（512 KiB HuCard）：
+
+| 结构 | 帧率 | 核 0 每帧 |
+|---|---:|---:|
+| 单缓冲 + 同步推屏 | 26～28 fps | 37.4 ms（含等核 1 推完的约 17 ms） |
+| 片内 + PSRAM 镜像 | 38～41 fps | 25.5 ms |
+
+**渲染满帧到不了 60 fps**，所以上了自适应跳帧 —— 这不是为了画面，是**音频的硬
+约束**：`osd_vsync()` 每次固定产 400 个采样，I2S 固定按 24000 Hz 消费，两者对得上
+的唯一条件是每秒正好调 60 次 vsync。渲染满帧时只有 38~41 次，每秒少喂 1/3 采样，
+队列反复见底，听感是持续破音。跳帧后模拟稳定 59~60 Hz，实画 12~18 帧/秒。
+
+裸 CPU 模拟约 13.9 ms/帧，已占 16.67 ms 预算的 83%，渲染一帧另需约 9.6 ms，
+所以最多只能画约 29% 的帧。上游 retro-go 跑 PCE 同样默认 `frameskip = 1`。
+
+**提升实画帧用的是超频，不是 IRAM。** `OVERCLOCK_LEVEL` 已从 0 改为 4，实画帧
+12~18 → 20~28（轻场景 28~36），片内余量仍是 82 KB，其余四个核心一并受益。
+
+⚠ **h6280 进 IRAM 这条路试过，不能用，别再走一遍。** 用 IDF linker fragment 按目标
+文件重定位（不改上游源码）后，裸模拟降到约 12.0 ms、实画帧 23~31 fps；但它吃掉
+30 KB 片内 SRAM，而 IRAM 和 DRAM 共用片内那块，**实测把 Genesis 打崩**（Golden Axe
+启动即 `StoreProhibited`，撤掉即恢复，做过单变量对照）。崩点是
+`gwenesis_bus.c` 的 `ZRAM` 和 `ym2612.c` 的三张查表：它们都是 `MALLOC_CAP_INTERNAL`
+且**没有 PSRAM 回退**，共 54 KiB，分配失败返回 NULL 后建表时直接写进去。
+`noflash_text`（只搬 .text 不搬 .rodata）省不出来，实测同样 30 KB、同样崩。
+结论：这 30 KB 不能从 Genesis 借，而超频不花内存就拿到了同等收益。
+
+连 PSRAM 镜像都开不出来时退回单缓冲 + 同步推屏；走没走这条退路看串口 `pce` tag
+的启动行，它会打印「PSRAM 镜像」还是「单缓冲」。
+
+⚠ 节流分支里那句 `else vTaskDelay(1)` 不能省。PCE 永远追不上 60 Hz，`sleep_us`
+恒为负，少了这句就一次都不让出核 0，十几秒后开始刷 `task_wdt: IDLE0 (CPU 0)`。
+nes/gbc/genesis 三个核心都有同一条。
+
+### 5.5 SNES，`SNES_MEM_PROFILE=0`
 
 这是当前最依赖 PSRAM 的路径。下表列大块对象；不包含 FreeRTOS/驱动、allocator 元数据、
 小对象和大小随声音核心状态变化的缓冲。

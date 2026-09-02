@@ -73,33 +73,24 @@ ls /dev/cu.usbmodem* /dev/cu.usbserial-* 2>/dev/null
 ```bash
 PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)
 idf.py -p "$PORT" -b 115200 flash
-idf.py -p "$PORT" flash-roms    # 改过 roms/ 或首次才需要；与 flash 分开是故意的
+# 游戏已改走 TF 卡：拷到 /roms/{nes,gb,gbc,snes,md}/ 后只按 RESET
+# 教材发音包变了才需要：idf.py flash-word-audio
 ```
 
 `flash` 只烧 bootloader + 分区表 + app。  
-`flash-roms` 烧 `0x210000` 的 ROM 分区（见 `partitions.csv` / 顶层 `CMakeLists.txt` 的 `ROMS_OFFSET`）。
+`0x210000` 分区现在是单词发音包（`flash-word-audio`），不再是 ROM 库。
 
-### 一键只烧 ROM（推荐）
+### 换游戏（TF 卡）
 
-往顶层 `roms/` 丢进新游戏（例如 `roms/nes/0085泡泡龙.nes`）后，**不用重烧固件**，在仓库根跑：
-
-```bash
-cd /Users/lizhenhe/esp32/esp32s3-gamebox
-./flash-roms.sh                 # 自动找 cu.usbmodem* / cu.usbserial-*
-# 或显式端口：
-./flash-roms.sh /dev/cu.usbmodem1101
-```
-
-脚本会：把 IDF 的 Python 3.12 venv 放到 PATH 最前 → `source ~/esp/esp-idf/export.sh` →
-重新打包 `roms/` → `idf.py flash-roms`。烧前同样要进下载模式（BOOT→RESET→松 BOOT）；
-烧完只按 RESET，菜单里按文件名排序应能看到新游戏。
+把卡拔下来插电脑，按平台目录拷 ROM（例如 `/roms/nes/0085泡泡龙.nes`），插回后只按 RESET。  
+仓库根的 `./flash-roms.sh` 只会提示改走 TF 并退出，不再烧分区。
 
 ## 烧完进应用
 
 - **只按 RESET**，不要按住 BOOT  
 - 若串口一直刷 `waiting for download` / `boot:0x0 (DOWNLOAD…)`，说明仍在下载模式：松开 BOOT 再 RESET
 
-屏上应出现 **GAME / TEST**。选 GAME 进菜单（应有 Super Mario Bros.）。
+屏上应出现 **GAME / WORDS / SETTINGS**。选 GAME 进平台菜单（ROM 来自 TF）。
 
 ## 串口监视
 

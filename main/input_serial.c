@@ -25,6 +25,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "nofrendo.h"
+#include "input_gamepad.h"   /* SNES 才有的 X/Y 位 */
 
 static const char *TAG = "input";
 
@@ -35,14 +36,18 @@ static const char *TAG = "input";
 
 #define RX_BUF      512
 
-static int64_t s_until[8];      /* 每个按键位的保持截止时间（微秒） */
-static uint8_t s_last_state;    /* 上一次的状态，用来只在变化时打日志 */
+/* 位数按 GAMEPAD_BIT_Y(0x200) 取到 10 —— 低 8 位和 NES_PAD_* 一致，
+ * 高两位是 SNES 的 X/Y，串口调试也要覆盖完整四面键。 */
+#define PAD_BITS    10
+
+static int64_t  s_until[PAD_BITS];  /* 每个按键位的保持截止时间（微秒） */
+static uint16_t s_last_state;       /* 上一次的状态，用来只在变化时打日志 */
 static int     s_esc;           /* 方向键转义序列的解析状态 */
 
-static void press(uint8_t mask)
+static void press(uint16_t mask)
 {
     int64_t t = esp_timer_get_time() + (int64_t)HOLD_MS * 1000;
-    for (int b = 0; b < 8; b++) {
+    for (int b = 0; b < PAD_BITS; b++) {
         if (mask & (1 << b)) s_until[b] = t;
     }
 }
@@ -77,6 +82,11 @@ static void feed(uint8_t c)
     case 'k': case 'K': case 'z': case 'Z': press(NES_PAD_A); break;  /* 跳 */
     case 'j': case 'J': case 'x': case 'X': press(NES_PAD_B); break;  /* 跑/发射 */
 
+    /* SNES 专有的两颗。借 u/i 是因为它们正好在 j/k 上一排，和 B/A 同一个手位；
+     * 'x' 已经被 B 占了，不能拿来当 SNES 的 X。NES/GB 会忽略这两位。 */
+    case 'u': case 'U': press(GAMEPAD_BIT_X); break;
+    case 'i': case 'I': press(GAMEPAD_BIT_Y); break;
+
     case '\r': case '\n': press(NES_PAD_START);  break;
     case '\t':            press(NES_PAD_SELECT); break;
 
@@ -101,12 +111,14 @@ void input_serial_init(void)
     printf("\n串口手柄已启用：\n");
     printf("  方向  W A S D  或 方向键\n");
     printf("  A(跳) K 或 Z      B(跑) J 或 X\n");
+    printf("  SNES X U          SNES Y I\n");
     printf("  START 回车        SELECT Tab\n");
+    printf("  游戏菜单 SELECT+SNES X（Tab+U）\n");
     printf("  按键卡住了敲空格全部松开\n");
     printf("  注意：串口没有「松手」事件，按住不放靠终端的按键重复维持\n\n");
 }
 
-uint8_t input_serial_poll(void)
+uint16_t input_serial_poll(void)
 {
     uint8_t buf[32];
     int n = uart_read_bytes(UART_NUM_0, buf, sizeof(buf), 0);   /* 0 = 不阻塞 */
@@ -115,13 +127,13 @@ uint8_t input_serial_poll(void)
     }
 
     int64_t now = esp_timer_get_time();
-    uint8_t state = 0;
-    for (int b = 0; b < 8; b++) {
+    uint16_t state = 0;
+    for (int b = 0; b < PAD_BITS; b++) {
         if (s_until[b] > now) state |= (1 << b);
     }
 
     if (state != s_last_state) {
-        ESP_LOGI(TAG, "%c%c%c%c %s %s %s %s",
+        ESP_LOGI(TAG, "%c%c%c%c %s %s %s %s %s %s",
                  (state & NES_PAD_UP)     ? 'U' : '-',
                  (state & NES_PAD_DOWN)   ? 'D' : '-',
                  (state & NES_PAD_LEFT)   ? 'L' : '-',
@@ -129,7 +141,9 @@ uint8_t input_serial_poll(void)
                  (state & NES_PAD_A)      ? "A" : "-",
                  (state & NES_PAD_B)      ? "B" : "-",
                  (state & NES_PAD_START)  ? "START"  : "-",
-                 (state & NES_PAD_SELECT) ? "SELECT" : "-");
+                 (state & NES_PAD_SELECT) ? "SELECT" : "-",
+                 (state & GAMEPAD_BIT_X)  ? "X" : "-",
+                 (state & GAMEPAD_BIT_Y)  ? "Y" : "-");
         s_last_state = state;
     }
     return state;

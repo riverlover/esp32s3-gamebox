@@ -194,60 +194,56 @@ static bool axes_init(void)
 /* 可视化的一帧状态。绘制现在跑在核 1 的条带回调里，所以每帧算出来的东西
  * 得先收进这个结构体传过去，不能直接闭包捕获。 */
 typedef struct {
-    int     bx, by, box, hc, vc;
-    int     px, py;
-    int     rx, ry, ex, ey;
-    uint8_t d;
-    uint16_t keys;
-    const char *storage;
-    const char *sound;
+    int     bx, by, box, hc, vc;    /* 方框几何 */
+    int     px, py;                 /* 光点位置 */
+    int     rx, ry, ex, ey;         /* 原始读数 / 去中位后的偏移 */
+    uint8_t d;                      /* 折算出的方向键位 */
+    uint16_t keys;                  /* 面键 + SELECT/START */
+    const char *storage;            /* TF 卡占用摘要，诊断画面开着期间不变 */
+    const char *sound;              /* MAX98357 自检状态行 */
 } viz_t;
 
-static int draw_key_chip(int x, int y, int w, int h, const char *name, bool pressed)
+static int draw_key_status(int x, int y, const char *name, bool pressed)
 {
-    display_fill_rect(x, y, w, h, pressed ? C_GREEN : RGB565(32, 32, 32));
-    display_rect(x, y, w, h, pressed ? C_WHITE : C_GRAY);
-    display_text(x + 3, y + (h - 8) / 2, name, pressed ? C_BLACK : C_GRAY, 1);
-    return x + w + 3;
+    display_text(x, y, name, pressed ? C_UI_OK : C_UI_FG_DIM, 1);
+    return x + (int)strlen(name) * 6 + 8;
 }
 
 static void viz_strip(uint16_t *strip, int y0, int h, void *ctx)
 {
     const viz_t *v = ctx;
 
-    display_clear(C_BLACK);
-    display_rect(v->bx, v->by, v->box, v->box, C_GRAY);
-    display_hline(v->bx, v->vc, v->box, C_GRAY);
-    display_vline(v->hc, v->by, v->box, C_GRAY);
-    display_fill_rect(v->px - 3, v->py - 3, 7, 7, C_GREEN);
+    /* 这页从 SETTINGS 进得来，所以跟着 display.h 的语义层走，不再是黑底
+     * 彩字。方框铺 C_UI_PANEL 把摇杆范围从页面底色里分出来，十字准星只用
+     * C_UI_LINE：准星是参考线，压过光点反而看不清摇杆偏到哪。 */
+    display_clear(C_UI_BG);
+    display_fill_rect(v->bx, v->by, v->box, v->box, C_UI_PANEL);
+    display_rect(v->bx, v->by, v->box, v->box, C_UI_EDGE);
+    display_hline(v->bx, v->vc, v->box, C_UI_LINE);
+    display_vline(v->hc, v->by, v->box, C_UI_LINE);
+    display_fill_rect(v->px - 3, v->py - 3, 7, 7, C_UI_WARN);
 
     char line[48];
     snprintf(line, sizeof(line), "raw %4d %4d", v->rx, v->ry);
-    display_text(4, v->by + v->box + 2, line, C_WHITE, 1);
-    snprintf(line, sizeof(line), "off %+5d %+5d  DIR %c%c%c%c",
-             v->ex, v->ey,
+    display_text(4, v->by + v->box + 3, line, C_UI_FG, 1);
+    snprintf(line, sizeof(line), "off %+5d %+5d", v->ex, v->ey);
+    display_text(4, v->by + v->box + 12, line, C_UI_FG_DIM, 1);
+    snprintf(line, sizeof(line), "DIR %c%c%c%c",
              (v->d & NES_PAD_UP)   ? 'U' : '-', (v->d & NES_PAD_DOWN)  ? 'D' : '-',
              (v->d & NES_PAD_LEFT) ? 'L' : '-', (v->d & NES_PAD_RIGHT) ? 'R' : '-');
-    display_text(4, v->by + v->box + 11, line, C_YELLOW, 1);
+    display_text(4, v->by + v->box + 23, line, C_UI_FG, 1);
 
-    /* 大键：A=START  B=A  C=B  D=SELECT（E/F 小键本机不用） */
-    int y = v->by + v->box + 24;
+    /* 本机 E/F 故障：大键承担 START/SELECT；标签跟 BUTTONS[] 一致。 */
     int x = 4;
-    x = draw_key_chip(x, y, 66, 16, "STA(A)", v->keys & GAMEPAD_BIT_START);
-    x = draw_key_chip(x, y, 50, 16, "A(B)",   v->keys & GAMEPAD_BIT_A);
-    x = draw_key_chip(x, y, 50, 16, "B(C)",   v->keys & GAMEPAD_BIT_B);
-        draw_key_chip(x, y, 66, 16, "SEL(D)", v->keys & GAMEPAD_BIT_SELECT);
+    int y = v->by + v->box + 35;
+    x = draw_key_status(x, y, "STA(A)", v->keys & GAMEPAD_BIT_START);
+    x = draw_key_status(x, y, "A(B)",   v->keys & GAMEPAD_BIT_A);
+    x = draw_key_status(x, y, "B(C)",   v->keys & GAMEPAD_BIT_B);
+    x = draw_key_status(x, y, "SEL(D)", v->keys & GAMEPAD_BIT_SELECT);
+    display_text(x + 4, y, "B+C EXIT", C_UI_WARN, 1);
 
-    y += 20;
-    draw_key_chip(4,   y, 138, 18, "START = top A",
-                  v->keys & GAMEPAD_BIT_START);
-    draw_key_chip(146, y, 138, 18, "SELECT = left D",
-                  v->keys & GAMEPAD_BIT_SELECT);
-
-    y += 22;
-    display_text(4, y, "E/F unused (shield fault)  B+C EXIT", C_YELLOW, 1);
-    display_text(4, y + 12, v->sound, C_CYAN, 1);
-    display_text(4, y + 24, v->storage, C_GRAY, 1);
+    display_text(4, y + 14, v->sound, C_UI_INFO, 1);
+    display_text(4, y + 26, v->storage, C_UI_FG_DIM, 1);
 }
 
 static uint16_t read_buttons(void)
@@ -294,16 +290,21 @@ void input_gamepad_show(void)
 
     const uint16_t exit_combo = GAMEPAD_BIT_A | GAMEPAD_BIT_B;
 
-    size_t used = 0, capacity = 0;
+    /* 存储占用只需要读一次——rom_menu_pick() 走到这里之前已经调过
+     * rom_store_init()，诊断画面开着的这几秒卡上占用也不会变。
+     * 用 uint64_t：size_t 是 32 位，大容量卡会溢出。 */
+    uint64_t used = 0, capacity = 0;
     rom_store_usage(&used, &capacity);
     char storage_line[48];
     if (capacity > 0) {
-        int pct = (int)((uint64_t)used * 100 / capacity);
+        int pct = (int)(used * 100 / capacity);
         snprintf(storage_line, sizeof(storage_line),
-                 "ROM %.1f/%.1fMB %d%%",
-                 used / (1024.0f * 1024.0f), capacity / (1024.0f * 1024.0f), pct);
+                 "SD %.0f/%.0fMB %d%% (%.0fMB FREE)",
+                 (double)used / (1024.0 * 1024.0),
+                 (double)capacity / (1024.0 * 1024.0), pct,
+                 (double)(capacity - used) / (1024.0 * 1024.0));
     } else {
-        snprintf(storage_line, sizeof(storage_line), "ROM STORAGE: N/A");
+        snprintf(storage_line, sizeof(storage_line), "SD CARD: N/A");
     }
 
     if (audio_output_get_volume() == 0) {

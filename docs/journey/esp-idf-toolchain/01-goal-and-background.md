@@ -20,5 +20,5 @@
 ## 成功判据（已达成）
 
 1. `idf.py build` 退出码 0，生成 `build/esp32s3-gamebox.bin` + `build/roms.bin`
-2. `idf.py -p /dev/cu.usbmodem… flash` + `flash-roms` 成功
+2. `idf.py -p /dev/cu.usbmodem… flash` 成功；游戏从 TF 卡加载
 3. 屏上出现 **GAME / TEST** 开机选择

@@ -82,7 +82,66 @@ static int                s_cur_h;       /* 它有多少行 */
 static int                s_cur_w;       /* 本帧画布宽度，也是条带行跨度 */
 static int                s_cur_frame_h; /* 本帧画布总高度 */
 
-static SemaphoreHandle_t  s_band_done;   /* 计数：每条带 DMA 传完 +1 */
+static SemaphoreHandle_t  s_band_done;
+
+/* 等一条带的 DMA 回执。**必须带超时**，不能 portMAX_DELAY。
+ *
+ * 实测过一个偶发死锁：菜单里翻页时推屏任务永远等不到某一次回执，于是不再
+ * 归还 s_idle，菜单跟着阻塞在 display_stream_sync，屏幕停在推了一半的画面
+ * （底部几条带保留旧内容），只能按 RST。整机其余部分是活的 —— 探针任务照
+ * 常输出，也没有任何看门狗告警，因为推屏任务是阻塞不是空转。
+ *
+ * 根因还没定死（往推屏任务里加几个 volatile 写就不复现了，说明窗口很窄）。
+ * 但无论根因是什么，「少收一次回执」都不该让整机瘫痪：超时就放弃本帧、把
+ * 残留回执排空、照常归还 s_idle，代价只是丢一帧。真发生时这里会大声报出来，
+ * 带上条带序号和回执计数 —— 那正是定位根因缺的最后一块数据。 */
+/* ⚠ UI 画面必须串行推屏，不能走流水线 —— 这条是实测逼出来的，别"优化"回去。
+ *
+ * 默认路径是流水线：一边把第 N+1 条转换进另一块条带缓冲、一边 DMA 推第 N
+ * 条，靠 s_strip 乒乓 + 滞后两条收回执实现重叠，任何时刻最多两个传输在飞。
+ * 游戏路径继续走这条，快得多。
+ *
+ * 但在菜单里用摇杆快速翻页时会**偶发死锁**：推屏任务卡死在
+ * esp_lcd_panel_draw_bitmap() 内部再也不返回，于是不归还 s_idle，菜单跟着
+ * 阻塞在 display_stream_sync，屏幕停在推了一半的画面，只能按 RST。
+ *
+ * 死锁签名极其稳定（多次复现完全一致）：永远卡在**最后一条带**的
+ * draw_bitmap 里，回执计数恒为 1 —— 也就是此刻已发出的 6 次传输全部完成、
+ * SPI 队列是空的，它却在里面等。队列深度配的是 MAX_BAND_COUNT+2=10，
+ * 远没填满；推屏任务栈余 1104 B，也不是栈溢出。改成「发一条、等一条」
+ * （任何时刻最多一个传输在飞）后不再复现。
+ *
+ * **根因没有查清**，只锁定了触发条件。所以这里不是全局关掉流水线，而是
+ * 只对 UI 画面关：
+ *   - 代价只落在 UI 上：推屏 15.5 -> 26 ms/帧。菜单只在按键时重绘一次，
+ *     看不出来；游戏保持原速（PCE 那边核 1 推屏本来就卡在边缘，掉到 26 ms
+ *     会直接拖垮帧率）。
+ *   - 判据用「是不是默认画布」：UI 全部走 288x224（rom_menu、开机菜单、
+ *     加载页、单词学习、手柄测试），五个模拟器都提交自己的原生尺寸。
+ *   - ⚠ 游戏路径上这个隐患理论上还在，只是从未触发过。怀疑触发条件和
+ *     条带回调的耗时有关：UI 每条带要重画 8 行文字、逐字查字模，比游戏那种
+ *     查表转换慢得多，DMA 早就完成、下一次 draw_bitmap 隔很久才来。
+ *
+ * 排查中已排除：菜单翻页算术、s_idle/s_submit/s_band_done 的收发配平、
+ * menu_font 字库排序与二分查找、utf8_next() 对截断多字节序列的处理、
+ * DMA 回执丢失（band_wait 的 200 ms 超时从未触发）、SPI 队列满、栈溢出。 */
+#define BAND_WAIT_MS  200       /* 一条带正常约 2 ms，200 ms 是纯粹的兜底 */
+
+static bool band_wait(int band, int band_count)
+{
+    if (xSemaphoreTake(s_band_done, pdMS_TO_TICKS(BAND_WAIT_MS)) == pdTRUE) {
+        return true;
+    }
+    static uint32_t timeouts;
+    timeouts++;
+    ESP_LOGE(TAG, "等 DMA 回执超时：条带 %d/%d，回执计数 %d，累计 %lu 次，丢弃本帧",
+             band, band_count, (int)uxSemaphoreGetCount(s_band_done),
+             (unsigned long)timeouts);
+    /* 排空可能迟到的回执，让下一帧从干净状态开始。 */
+    while (xSemaphoreTake(s_band_done, 0) == pdTRUE) { }
+    return false;
+}
+   /* 计数：每条带 DMA 传完 +1 */
 static SemaphoreHandle_t  s_submit;      /* 二值：有新帧待推 */
 static SemaphoreHandle_t  s_idle;        /* 二值：推屏任务空闲，可以收新帧 */
 
@@ -111,6 +170,9 @@ static void blit_task(void *arg)
         const int frame_x = s_frame_x;
         const int frame_y = s_frame_y;
         const int band_count = (frame_h + BAND_LINES - 1) / BAND_LINES;
+        /* 默认画布 = UI 画面，见上面那段。 */
+        const bool serial_push = (frame_w == DISP_FB_W && frame_h == DISP_FB_H);
+        bool aborted = false;
 #if DISP_PROFILE
         int64_t push_t0 = esp_timer_get_time();
 #endif
@@ -126,7 +188,8 @@ static void blit_task(void *arg)
              * 实际上 draw_bitmap 内部会等上一条传完才发命令，所以这一步几乎
              * 总是立刻返回。但那是驱动的实现细节，不是契约 —— 显式等一次让
              * 「不会覆写正在 DMA 的缓冲」这件事在本地就能看明白，代价为零。 */
-            if (i >= 2) xSemaphoreTake(s_band_done, portMAX_DELAY);
+            if (!serial_push && i >= 2 &&
+                !band_wait(i, band_count)) { aborted = true; break; }
 
             s_cur    = s_strip[i & 1];
             s_cur_y0 = y0;
@@ -139,11 +202,14 @@ static void blit_task(void *arg)
                                       frame_x,           frame_y + y0,
                                       frame_x + frame_w, frame_y + y0 + h,
                                       s_cur);
+            /* 串行模式：立刻收掉这一条的回执，任何时刻最多一个传输在飞。 */
+            if (serial_push && !band_wait(i, band_count)) { aborted = true; break; }
         }
         /* 循环里至多漏收两条（i=0、1 时没等），这里补齐最后的 DMA 回执。 */
-        int pending = band_count < 2 ? band_count : 2;
-        for (int i = 0; i < pending; i++) {
-            xSemaphoreTake(s_band_done, portMAX_DELAY);
+        /* 串行模式每条带已经就地收过回执，不用补。 */
+        int pending = serial_push ? 0 : (band_count < 2 ? band_count : 2);
+        for (int i = 0; !aborted && i < pending; i++) {
+            if (!band_wait(band_count + i, band_count)) break;
         }
 
 #if DISP_PROFILE
@@ -535,4 +601,81 @@ void display_text(int x, int y, const char *s, uint16_t color, int scale)
         }
         cx += 6 * scale;    /* 5 列字形 + 1 列间距 */
     }
+}
+
+void display_text_16(int x, int y, const char *s, uint16_t color)
+{
+    int cx = x;
+    while (*s) {
+        uint32_t codepoint = utf8_next(&s);
+        const uint8_t *han = codepoint > 0x7E ? menu_font_glyph(codepoint) : NULL;
+
+        if (han) {
+            for (int row = 0; row < 16; row++) {
+                uint16_t bits = ((uint16_t)han[row * 2] << 8) | han[row * 2 + 1];
+                for (int col = 0; col < 16; col++) {
+                    if (bits & (0x8000u >> col)) {
+                        display_pixel(cx + col, y + row, color);
+                    }
+                }
+            }
+            cx += 17;       /* 16px 全角 + 1px 字距 */
+            continue;
+        }
+
+        const uint8_t *ascii = menu_font_ascii_glyph(codepoint);
+        for (int row = 0; row < 16; row++) {
+            uint8_t bits = ascii[row];
+            for (int col = 0; col < 8; col++) {
+                if (bits & (0x80u >> col)) {
+                    display_pixel(cx + col, y + row, color);
+                }
+            }
+        }
+        cx += 9;            /* 8px 半角 + 1px 字距 */
+    }
+}
+
+void display_text_ascii_16_scaled(int x, int y, const char *s,
+                                  uint16_t color, int scale)
+{
+    if (scale < 1) scale = 1;
+
+    int cx = x;
+    while (*s) {
+        uint32_t codepoint = utf8_next(&s);
+        const uint8_t *ascii = menu_font_ascii_glyph(codepoint);
+        for (int row = 0; row < 16; row++) {
+            uint8_t bits = ascii[row];
+            for (int col = 0; col < 8; col++) {
+                if (bits & (0x80u >> col)) {
+                    display_fill_rect(cx + col * scale, y + row * scale,
+                                      scale, scale, color);
+                }
+            }
+        }
+        cx += 9 * scale;
+    }
+}
+
+int display_text_width_ascii_16_scaled(const char *s, int scale)
+{
+    if (scale < 1) scale = 1;
+
+    int width = 0;
+    while (*s) {
+        (void)utf8_next(&s);
+        width += 9 * scale;
+    }
+    return width;
+}
+
+int display_text_width_16(const char *s)
+{
+    int width = 0;
+    while (*s) {
+        uint32_t codepoint = utf8_next(&s);
+        width += codepoint > 0x7E && menu_font_glyph(codepoint) ? 17 : 9;
+    }
+    return width;
 }

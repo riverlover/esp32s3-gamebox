@@ -1844,16 +1844,8 @@ static void reset_channels(FM_CH *CH , int num )
 }
 
 /* initialize generic tables */
-static void init_tables(void)
+bool YM2612ReserveTables(void)
 {
-  //printf("YM2612 init tables\n");
-  signed int d,i,x;
-  signed int n;
-  double o,m;
-
-  /* 三张表按需申请，只在真正启动 Genesis 时占用内部 SRAM（原因见文件顶部
-   * tl_tab 声明处的注释）。逐样本查表是音频热路径，仍旧钉在内部 SRAM，
-   * 不下放 PSRAM——避免重蹈 docs/memory.md 记录过的断音问题。 */
   if (!tl_tab) tl_tab = heap_caps_malloc(TL_TAB_LEN * sizeof(*tl_tab),
                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (!sin_tab) sin_tab = heap_caps_malloc(SIN_LEN * sizeof(*sin_tab),
@@ -1867,6 +1859,21 @@ static void init_tables(void)
                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 #endif
   }
+
+  return tl_tab && sin_tab && lfo_pm_table;
+}
+
+static bool init_tables(void)
+{
+  //printf("YM2612 init tables\n");
+  signed int d,i,x;
+  signed int n;
+  double o,m;
+
+  /* 三张表按需申请，只在真正启动 Genesis 时占用内部 SRAM（原因见文件顶部
+   * tl_tab 声明处的注释）。逐样本查表是音频热路径，仍旧钉在内部 SRAM，
+   * 不下放 PSRAM——避免重蹈 docs/memory.md 记录过的断音问题。 */
+  if (!YM2612ReserveTables()) return false;
 
   /* build Linear Power Table */
   for (x=0; x<TL_RES_LEN; x++)
@@ -1977,17 +1984,19 @@ static void init_tables(void)
     }
   }
 
+  return true;
 }
 
 /* initialize ym2612 emulator */
-void YM2612Init(void) {
+bool YM2612Init(void) {
   static unsigned init_table_done = 0;
 
   memset(&ym2612, 0, sizeof(YM2612));
   if (init_table_done == 0) {
-    init_tables();
+    if (!init_tables()) return false;
     init_table_done = 1;
   }
+  return true;
 }
 
 /* reset OPN registers */
