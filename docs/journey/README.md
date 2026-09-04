@@ -24,6 +24,8 @@
 | [joystick-shield/](joystick-shield/README.md) | JoyStick Shield 接线 + **E/F 故障改 A/D 映射**（已验证） | **已归档** |
 | [nes-classic-wishlist/](nes-classic-wishlist/README.md) | NES 装机经典优先清单（约 20 款正作）+ **TF 卡拷贝**步骤 | 待自备 ROM |
 | [upstream-sync-2026-09-02/](upstream-sync-2026-09-02/README.md) | 合入上游 TF/WORDS/PCE，保留本机 A/D 改脚 | **build 已过，待上板** |
+| [tf-card-empty-menu/](tf-card-empty-menu/README.md) | 空菜单玛丽；最小冒烟；**0x106 CRC wrap**；**LFN 短名→中文** | **历程已写全；LFN 固件已烧** |
+| [ui-settings-nvs/](ui-settings-nvs/README.md) | SETTINGS 音量/背光写入 NVS，重启保留 | **待上板验证** |
 
 ## 和仓库其他文档的关系
 

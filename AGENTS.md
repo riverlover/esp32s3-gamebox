@@ -58,15 +58,18 @@ idf.py flash-word-audio                                   # 只在教材词表/�
 | `DISP_PROFILE`（默认 1） | `main/display.c` | 每秒打一行核 1 推屏耗时。调 `BAND_LINES` / 画布尺寸时看这个 |
 | `DIAG_TIMING` | `main/nes_emu.c` | 开机跑一遍分阶段计时（只 CPU / +PPU / 完整），定位核 0 瓶颈 |
 | `SHOW_DISPLAY_SELFTEST` | `main/main.c` | 点屏诊断图，验旋转/颜色顺序/反色 |
-| `SD_SELFTEST`（默认 0） | `main/main.c` | TF 卡自检：列根目录 + 写读校验，只走串口。**换卡或改接线时打开**，慢卡上要多花两秒 |
-| `SD_BENCHMARK`（默认 0） | `main/sd_card.c` | 扇区读基准，量这张卡的命令固定开销和吞吐。判读方法和本机实测值见那个函数的注释 |
+| `SD_SELFTEST`（默认 0） | `main/main.c` | 完整固件里临时加 TF 自检输出。**换卡/接线优先用下面的最小冒烟** |
+| `SD_SMOKE_ONLY`（CMake，默认 OFF） | 根 `CMakeLists.txt` | 只编 `sd_card`+迷你入口的最小 TF 冒烟固件。`idf.py fullclean && idf.py -DSD_SMOKE_ONLY=1 build flash monitor`；细节见 `docs/journey/tf-card-empty-menu/` |
+| `SD_BENCHMARK`（默认 0；冒烟构建强制 1） | `main/sd_card.c` | 扇区读基准，量这张卡的命令固定开销和吞吐。判读方法和本机实测值见那个函数的注释 |
 | `SCAN_PROFILE`（默认 0） | `main/rom_store.c` | 扫描分阶段计时（readdir / stat），定位扫描慢在哪 |
 | `OVERCLOCK_LEVEL`（**默认 4，已开启**） | `main/main.c` / `main/overclock.c` | 开机下发 BBPLL 微调寄存器把 CPU 推过 Kconfig 240MHz 上限，档位范围 `[-8, 8]`。没有标定 MHz——效果因片而异，实测主频打在串口 `overclock` tag 下，配合下面的 "CPU 余量" 自报行判断效果、单变量调档。本机实测：4 档能跑，6 档触发看门狗复位（`TG1WDT_SYS_RST`）不稳定，5 档没测过。2026-08-28 为 PC Engine 把默认值从 0 改成 4：实画帧 12~18 → 20~28，其余四个核心一并受益，且一个字节内存都不花。想回出厂主频把这个宏改回 0 |
 
 开机画面（`main.c`）现在会停下来问 GAME/WORDS/SETTINGS：WORDS 进入苏州小学译林版
 三至六年级上/下册选择，再选择 Unit 1～8；每册进度按教材版本独立保存；SETTINGS
 沿用 retro-go Options 的单列交互；游戏以外的界面统一走 gruvbox light，可调音量
-和背光；音量使用以 50% 为锚点的听感曲线，每次调整立即播放 `hello` 试听；也可进入
+和背光（写入 NVS 命名空间 `ui_prefs`，重启后由 `audio_output_settings_init` /
+`display_init` 读回；读失败回退 50% / 100%）；音量使用以 50% 为锚点的听感曲线，
+每次调整立即播放 `hello` 试听；也可进入
 摇杆 + 按键 + MAX98357 提示音诊断（`input_gamepad_show()`）——本机 Shield E/F
 故障后改用大键：`START(A)` 播 beep，`SELECT(D)` 调音量，屏上 `SND OK` / `SND OFF`
 可区分接线问题和菜单静音到 0%；同时显示两路原始 ADC 与 TF 卡占用。
@@ -175,8 +178,9 @@ GB/GBC（共用 `gbc_emu.c`）、Genesis 都已经改走 `display_stream_sized()
   按实际字节数推进裸 ROM / ZIP，界面每 5% 才重画一次；不要改成每个 64 KB 块都
   无条件推屏，4 MiB ROM 会凭空多刷 64 帧并拖慢加载。
 - 所有失败都只让 `rom_store_init()` 返回 0、不 abort：没插卡、卡挂不上、卡上没有
-  合法 ROM，都回退到 `nes_emu.c` 里 `ROM_CHOICE` 选的编译期嵌入 ROM。
-  ⚠️ 目前**没卡时屏幕上没有任何提示**，直接进内置游戏，看起来像坏了。
+  合法 ROM，都让 `rom_menu` 停在「没有游戏」提示页：说明是卡未挂载还是卡上
+  无 ROM；**B 返回**开机模式选择，**A 才**进 `ROM_CHOICE` 内置 NES。不要再静默
+  直跳内置游戏——那样看起来像菜单坏了。
 
 ### 非游戏 UI 的配色
 

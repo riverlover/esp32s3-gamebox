@@ -17,6 +17,8 @@
 #include "nes/nes.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -30,7 +32,10 @@ static const char *TAG = "audio";
 #define AUDIO_QUEUE_FRAMES 4
 #define AUDIO_FADE_MS      20      /* 音量变化时缓变，避免 MAX98357 突然跳变发出爆音 */
 #define AUDIO_GAIN_MAX_Q15 ((32768 * 9) / 10)  /* 满量程留 10% 余量防削波，档位 100% 封顶在这 */
-#define AUDIO_VOLUME_DEFAULT 50    /* 开机默认档位（0~100，10 的整数倍） */
+#define AUDIO_VOLUME_DEFAULT 50    /* 无 NVS 记录时的开机默认档位（0~100，10 的整数倍） */
+/* 与 display.c 背光共用命名空间；键名短是因为 NVS 键最长 15 字符。 */
+#define UI_NVS_NS          "ui_prefs"
+#define UI_NVS_KEY_VOLUME  "volume"
 
 typedef struct {
     uint16_t sample_count;
@@ -71,12 +76,67 @@ static int32_t volume_gain_q15(int percent)
     return AUDIO_GAIN_MAX_Q15 * volume_curve_percent(percent) / 100;
 }
 
+static int volume_clamp(int percent)
+{
+    if (percent < 0) return 0;
+    if (percent > 100) return 100;
+    return percent;
+}
+
+/* 打开 ui_prefs。失败时返回 false，调用方继续用内存默认值，不整区 erase NVS。 */
+static bool ui_nvs_open(nvs_handle_t *out)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "NVS 未就绪，音量只在本次开机有效：%s", esp_err_to_name(err));
+        return false;
+    }
+    err = nvs_open(UI_NVS_NS, NVS_READWRITE, out);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ui_prefs 打不开：%s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+static int volume_load_or_default(void)
+{
+    nvs_handle_t nvs;
+    if (!ui_nvs_open(&nvs)) return AUDIO_VOLUME_DEFAULT;
+
+    uint8_t saved = AUDIO_VOLUME_DEFAULT;
+    esp_err_t err = nvs_get_u8(nvs, UI_NVS_KEY_VOLUME, &saved);
+    nvs_close(nvs);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return AUDIO_VOLUME_DEFAULT;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "读音量失败：%s", esp_err_to_name(err));
+        return AUDIO_VOLUME_DEFAULT;
+    }
+    if (saved > 100) {
+        ESP_LOGW(TAG, "音量 NVS 值异常 %u，回退默认", (unsigned)saved);
+        return AUDIO_VOLUME_DEFAULT;
+    }
+    return (int)saved;
+}
+
+static void volume_save(int percent)
+{
+    nvs_handle_t nvs;
+    if (!ui_nvs_open(&nvs)) return;
+
+    esp_err_t err = nvs_set_u8(nvs, UI_NVS_KEY_VOLUME, (uint8_t)percent);
+    if (err == ESP_OK) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "音量保存失败：%s", esp_err_to_name(err));
+    }
+}
+
 esp_err_t audio_output_settings_init(void)
 {
-    /* 音量档位只服务于当前菜单选择，不再读写 NVS。这样即使用户调低或静音，
-     * 按 RST 换游戏或重新上电后也一定从默认档位开始。 */
-    atomic_store_explicit(&s_volume, AUDIO_VOLUME_DEFAULT, memory_order_relaxed);
-    ESP_LOGI(TAG, "音量默认：%d%%（仅本次开机有效）", AUDIO_VOLUME_DEFAULT);
+    int percent = volume_load_or_default();
+    atomic_store_explicit(&s_volume, percent, memory_order_relaxed);
+    ESP_LOGI(TAG, "音量恢复：%d%%", percent);
     return ESP_OK;
 }
 
@@ -87,10 +147,10 @@ int audio_output_get_volume(void)
 
 esp_err_t audio_output_set_volume(int percent)
 {
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
+    percent = volume_clamp(percent);
     atomic_store_explicit(&s_volume, percent, memory_order_relaxed);
-    ESP_LOGI(TAG, "音量：%d%%（仅本次开机有效）", percent);
+    volume_save(percent);
+    ESP_LOGI(TAG, "音量：%d%%（已写入 NVS）", percent);
     return ESP_OK;
 }
 

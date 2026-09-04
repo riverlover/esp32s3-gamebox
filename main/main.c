@@ -612,7 +612,7 @@ void app_main(void)
     sd_card_mount();
 #endif
 
-    /* 声音开关只在当前运行中有效；每次启动都先恢复默认开启。 */
+    /* 音量从 NVS 恢复；没有记录时默认 50%。背光在随后的 display_init() 里读。 */
     audio_output_settings_init();
 
     if (display_init() != ESP_OK) {
@@ -640,7 +640,8 @@ void app_main(void)
     }
     /* 开机选单只返回目录项；各模拟器在自己的大块内存准备妥当后再从卡上读，
      * SNES 尤其不能先读出 4 MiB 再复制一份，否则 8 MiB PSRAM 会在峰值时耗尽。
-     * 卡不可用时 entry 留 NULL，NES 继续走编译期嵌入 ROM 的回退路径。 */
+     * 卡不可用时菜单会先停在「没有游戏」页；只有玩家按 A 才 entry=NULL
+     * 走编译期嵌入 ROM，按 B 则回到上面的 boot_menu。 */
     const rom_store_entry_t *entry = NULL;
     while (1) {
         boot_mode_t boot_mode = boot_menu();
@@ -658,7 +659,7 @@ void app_main(void)
 
         rom_menu_result_t menu_result = rom_menu_pick(&entry);
         if (menu_result == ROM_MENU_BACK) continue;
-        break;  /* 已选游戏，或目录不可用而回退到内置 NES */
+        break;  /* SELECTED，或提示页上按 A 选了内置 NES */
     }
 
     /* ZIP 为了开机快只登记外层文件名，到玩家真正选择时才读一次内部目录。 */

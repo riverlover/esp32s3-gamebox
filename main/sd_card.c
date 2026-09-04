@@ -38,6 +38,22 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 
+/* 部分 TF 卡在 SPI 模式下拒绝 CRC_ON_OFF（CMD59），IDF 的 sdmmc_init_spi_crc
+ * 会因此返回 ESP_ERR_NOT_SUPPORTED(0x106) 并整卡判死。SPI 规范里数据 CRC 对
+ * 主机是可选的；社区与 IDFGH-14710 的做法是把 0x106 当成功继续挂载。
+ * 用 --wrap 包一层，不改 IDF 源码。若后面读写校验仍失败，才回头查接线。 */
+esp_err_t __real_sdmmc_init_spi_crc(sdmmc_card_t *card);
+esp_err_t __wrap_sdmmc_init_spi_crc(sdmmc_card_t *card)
+{
+    esp_err_t err = __real_sdmmc_init_spi_crc(card);
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW("sd_card",
+                 "卡拒绝开启 SPI CRC（0x106），按可选处理继续挂载");
+        return ESP_OK;
+    }
+    return err;
+}
+
 static const char *TAG = "sd_card";
 
 /* 接线。模块丝印是 3V3/CS/MOSI/CLK/MISO/GND。 */
@@ -52,14 +68,18 @@ static const char *TAG = "sd_card";
 static const int SD_FREQ_KHZ[] = { 20000, 4000 };
 
 /* 扇区读基准开关，见下面 read_benchmark() 的注释。换卡后想量这张卡快不快
- * 就打开；它自己要跑好几秒，平时别开。 */
+ * 就打开；它自己要跑好几秒，平时别开。
+ * SD_SMOKE_ONLY 构建会在 CMake 里 -DSD_BENCHMARK=1 强制打开。 */
+#ifndef SD_BENCHMARK
 #define SD_BENCHMARK 0
+#endif
 
 #define SD_TEST_FILE  SD_MOUNT_POINT "/sdtest.tmp"
 static const char SD_TEST_TEXT[] = "esp32s3-gamebox sd bring-up\n";
 
 static sdmmc_card_t *s_card;
 static int s_used_khz;
+static esp_err_t s_last_err = ESP_OK;
 
 /* 这块便宜 breakout 板上常常只留了上拉电阻的焊盘、没有真的焊件，而 SD 协议要求
  * CS/MOSI/MISO 都有上拉。内部上拉约 45 kΩ 偏弱，只是让首次点亮的成功率高一些；
@@ -86,6 +106,8 @@ static const char *mount_hint(esp_err_t err)
         return "已经挂载过或总线被占用";
     case ESP_FAIL:
         return "找到卡但挂不上文件系统：卡没格式化成 FAT16/FAT32（exFAT 默认不支持）";
+    case ESP_ERR_NOT_SUPPORTED:
+        return "卡拒绝某条命令（常见于 SPI CRC）：先看是否已用 wrap 放过 0x106；仍失败再查接线/换卡";
     default:
         return "";
     }
@@ -111,6 +133,7 @@ esp_err_t sd_card_mount(void)
     };
     esp_err_t err = spi_bus_initialize(SD_HOST, &bus, SPI_DMA_CH_AUTO);
     if (err != ESP_OK) {
+        s_last_err = err;
         ESP_LOGE(TAG, "SPI3 初始化失败：%s", esp_err_to_name(err));
         return err;
     }
@@ -135,8 +158,10 @@ esp_err_t sd_card_mount(void)
                                       &mount_cfg, &s_card);
         if (err == ESP_OK) {
             s_used_khz = SD_FREQ_KHZ[i];
+            s_last_err = ESP_OK;
             break;
         }
+        s_last_err = err;
         ESP_LOGW(TAG, "%d kHz 挂载失败：%s —— %s",
                  SD_FREQ_KHZ[i], esp_err_to_name(err), mount_hint(err));
         s_card = NULL;
@@ -166,6 +191,30 @@ esp_err_t sd_card_mount(void)
 bool sd_card_mounted(void)
 {
     return s_card != NULL;
+}
+
+/* 屏上只有一行位置，hint 必须短；完整句子仍在串口 mount_hint()。 */
+const char *sd_card_mount_hint(void)
+{
+    if (s_card) return "";
+    switch (s_last_err) {
+    case ESP_OK:
+        return "";
+    case ESP_ERR_TIMEOUT:
+        return "卡无响应 查CS/CLK";
+    case ESP_ERR_NOT_FOUND:
+        return "未找到卡 查3V3/GND";
+    case ESP_ERR_INVALID_RESPONSE:
+        return "响应乱 查MOSI/MISO";
+    case ESP_ERR_INVALID_STATE:
+        return "总线占用";
+    case ESP_FAIL:
+        return "文件系统挂不上";
+    case ESP_ERR_NOT_SUPPORTED:
+        return "卡拒CRC/不支持";
+    default:
+        return "挂载失败 查接线";
+    }
 }
 
 void sd_card_usage(uint64_t *used_bytes, uint64_t *total_bytes)

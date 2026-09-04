@@ -586,10 +586,14 @@ SPI3 在 ESP32-S3 上没有 IOMUX 原生脚，四根线一律走 GPIO matrix，�
 - **供电**：SD 卡写入瞬时能吃 50~100 mA，初始化还有涌流。3V3/GND 就近并
   10~47 µF + 0.1 µF。README 里「只跑 SNES 时背光闪烁」那条说明 3V3 轨余量本来就紧，
   电池供电时更要留意。
-- **长文件名没开**：当前 `CONFIG_FATFS_LFN_NONE=y`，只认 8.3 短名，
-  `System Volume Information` 会显示成 `SYSTEM~1`。要拿 SD 当 ROM 来源，
-  得先在 `sdkconfig.defaults` 里开 `CONFIG_FATFS_LFN_HEAP`（长名表放堆上，
-  不吃内部 SRAM）。
+- **长文件名**：`sdkconfig.defaults` 已开 `CONFIG_FATFS_LFN_HEAP` + UTF-8 API。
+  ⚠ 改 defaults 后必须 `rm sdkconfig` 再 build，否则现用 `sdkconfig` 可能仍是
+  `LFN_NONE`，菜单会显示 `0085_~26` 这类 8.3 短名（电脑上中文长名还在）。
+  修好后开机按住 SELECT 刷新 `.gamebox-rom-index`。详见
+  `docs/journey/tf-card-empty-menu/`。
+- **部分卡拒 SPI CRC（0x106）**：`sdmmc_init_spi_crc` 失败不一定是接线；
+  本仓库用 `--wrap=sdmmc_init_spi_crc` 把 `ESP_ERR_NOT_SUPPORTED` 当可选成功
+  （SD128 实测可挂上并读写通过）。换卡或改接线时优先烧 `SD_SMOKE_ONLY=1` 冒烟。
 - 卡认不出来时先看串口：`sd_card.c` 会把常见错误码翻成「该查哪根线」，
   并自动降到 4 MHz 再试一次做对照实验。两档都失败 = 接线问题；
   20 失败 4 成功 = 信号完整性问题。

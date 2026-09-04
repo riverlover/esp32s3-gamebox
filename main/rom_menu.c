@@ -36,6 +36,7 @@
 #include <string.h>
 #include "rom_menu.h"
 #include "rom_store.h"
+#include "sd_card.h"
 #include "display.h"
 #include "input_serial.h"
 #include "input_gamepad.h"
@@ -365,19 +366,94 @@ static void draw_games(int count, const category_t *cat, int sel)
     display_stream_sync(draw_strip, &a);
 }
 
+/* 卡不可用 / 扫到 0 个游戏时的提示页。
+ * 以前这里直接 return FALLBACK，屏上一闪就进内置超级玛丽，看起来像菜单坏了。
+ * 现在停住说明原因：B 回开机选模式，A 才主动玩内置 ROM。 */
+typedef struct {
+    bool mounted;
+    const char *hint;   /* 未挂载时的短原因；可空 */
+} empty_draw_t;
+
+static void empty_strip(uint16_t *strip, int y0, int h, void *ctx)
+{
+    const empty_draw_t *a = ctx;
+    (void)strip;
+    (void)y0;
+    (void)h;
+
+    display_clear(C_UI_BG);
+    display_rect(0, 0, DISP_FB_W, DISP_FB_H, C_UI_EDGE);
+
+    int title_w = display_text_width_16("没有游戏");
+    display_text_16((DISP_FB_W - title_w) / 2, 28, "没有游戏", C_UI_BAD);
+
+    if (!a->mounted) {
+        /* 电脑已确认卡是 FAT、有 ROM——未挂载几乎总是接线/供电，不再提格式。 */
+        int w1 = display_text_width_16("TF 卡未挂载");
+        display_text_16((DISP_FB_W - w1) / 2, 68, "TF 卡未挂载", C_UI_FG);
+        const char *hint = (a->hint && a->hint[0]) ? a->hint : "查 3V3/GND/四线";
+        int w2 = display_text_width_16(hint);
+        display_text_16((DISP_FB_W - w2) / 2, 92, hint, C_UI_WARN);
+        int w3 = display_text_width_16("CLK39 MOSI41 MISO40 CS42");
+        display_text_16((DISP_FB_W - w3) / 2, 116,
+                        "CLK39 MOSI41 MISO40 CS42", C_UI_FG_FAINT);
+    } else {
+        int w1 = display_text_width_16("卡上未找到 ROM");
+        display_text_16((DISP_FB_W - w1) / 2, 68, "卡上未找到 ROM", C_UI_FG);
+        int w2 = display_text_width_16("请拷到 /roms/nes/ 等");
+        display_text_16((DISP_FB_W - w2) / 2, 92, "请拷到 /roms/nes/ 等", C_UI_FG_DIM);
+    }
+
+    int f1 = display_text_width_16("B 返回");
+    display_text_16((DISP_FB_W - f1) / 2, 168, "B 返回", C_UI_FG);
+    int f2 = display_text_width_16("A 玩内置游戏");
+    display_text_16((DISP_FB_W - f2) / 2, 192, "A 玩内置游戏", C_UI_FG_FAINT);
+}
+
+static rom_menu_result_t show_empty_catalog(void)
+{
+    bool mounted = sd_card_mounted();
+    const char *hint = mounted ? "" : sd_card_mount_hint();
+    ESP_LOGW(TAG, "TF 卡%s，目录为空——停在提示页，等玩家选 B 返回或 A 玩内置%s%s",
+             mounted ? "已挂载但" : "未挂载，",
+             hint[0] ? "；" : "", hint);
+
+    input_serial_init();
+    input_usb_init();
+    input_gamepad_init();
+
+    empty_draw_t draw = { .mounted = mounted, .hint = hint };
+    display_stream_sync(empty_strip, &draw);
+
+    uint16_t prev = poll_input();
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+        uint16_t now = poll_input();
+        uint16_t edge = now & ~prev;
+        prev = now;
+
+        if (edge & NES_PAD_B) {
+            ui_sound_back();
+            return ROM_MENU_BACK;
+        }
+        if (edge & (NES_PAD_A | NES_PAD_START)) {
+            ui_sound_enter();
+            return ROM_MENU_FALLBACK;
+        }
+    }
+}
+
 rom_menu_result_t rom_menu_pick(const rom_store_entry_t **entry)
 {
     int count = rom_store_init(false);
     if (count <= 0) {
-        ESP_LOGW(TAG, "TF 卡上没有游戏，用编译期嵌入的那个");
-        return ROM_MENU_FALLBACK;
+        return show_empty_catalog();
     }
 
     category_t cats[SYSTEM_COUNT];
     int cat_count = build_categories(count, cats, SYSTEM_COUNT);
     if (cat_count <= 0) {       /* count > 0 就不该发生，稳妥起见 */
-        ESP_LOGW(TAG, "目录里一个平台都认不出来，用编译期嵌入的那个");
-        return ROM_MENU_FALLBACK;
+        return show_empty_catalog();
     }
 
     /* 三路输入并存：飞线手柄、USB HID、串口调试键盘。init 都是幂等的，

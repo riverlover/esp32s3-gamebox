@@ -21,6 +21,9 @@ esp_err_t sd_card_mount(void);
 /* 当前是否已挂载。 */
 bool sd_card_mounted(void);
 
+/* 最近一次挂载失败的短中文原因（给屏上提示）。已挂载或尚未尝试时返回空串。 */
+const char *sd_card_mount_hint(void);
+
 /* 卡容量与已用字节数。没挂载时两个都写 0。 */
 void sd_card_usage(uint64_t *used_bytes, uint64_t *total_bytes);
 

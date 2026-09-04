@@ -288,10 +288,11 @@ void display_stream_sync(disp_strip_fn fn, void *ctx);
 /* 等待已提交的帧全部推完。 */
 void display_wait_idle(void);
 
-/* 背光亮度 0~100。BL 脚接 3V3 常亮时此函数无效果。 */
+/* 背光亮度 5~100（与 SETTINGS 下限一致）。立即改 PWM，并写入 NVS
+ *（命名空间 ui_prefs），下次开机由 display_init() 读回。 */
 void display_backlight(int percent);
 
-/* 当前背光百分比（display_backlight() 最后一次设的值，默认 100）。 */
+/* 当前背光百分比（display_backlight() / 开机恢复后的值，默认 100）。 */
 int display_get_backlight(void);
 
 /* ---- 基本绘图 ----

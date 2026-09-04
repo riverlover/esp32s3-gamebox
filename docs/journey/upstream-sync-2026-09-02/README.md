@@ -43,6 +43,9 @@ idf.py build   # 本机已通过
 - [ ] 插 TF 卡烧录后：GAME 能列出卡上 ROM；SETTINGS → Controller Test 大键 A/D 与 beep
 - [ ] （可选）`idf.py flash-word-audio` 后再进 WORDS
 
+若选 GAME 后**直接进超级玛丽**、看不到平台菜单：那是 TF 目录为空时的回退，
+不是「只扫到一部游戏」。见 [tf-card-empty-menu](../tf-card-empty-menu/README.md)。
+
 ## 下一步
 
 1. 把现有游戏按 `/roms/{nes,gb,gbc,snes,md}/` 拷进 TF。

@@ -48,6 +48,8 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -58,6 +60,11 @@ static const char *TAG = "disp";
 #define BAND_LINES      32
 #define MAX_BAND_COUNT  ((DISP_H + BAND_LINES - 1) / BAND_LINES)
 #define BAND_BYTES      (DISP_W * BAND_LINES * 2)
+#define BACKLIGHT_DEFAULT 100
+/* 与 audio_output.c 音量共用；SETTINGS 背光下限是 5%，读回时也按这个夹。 */
+#define UI_NVS_NS            "ui_prefs"
+#define UI_NVS_KEY_BACKLIGHT "backlight"
+#define BACKLIGHT_MIN_PCT    5
 
 _Static_assert(MAX_BAND_COUNT >= 2, "条带数至少 2，否则流水不起来");
 
@@ -272,13 +279,68 @@ static void backlight_init(void)
     ESP_ERROR_CHECK(ledc_channel_config(&c));
 }
 
-static int s_backlight_pct = 100;
+static int s_backlight_pct = BACKLIGHT_DEFAULT;
 
-void display_backlight(int percent)
+static int backlight_clamp(int percent)
+{
+    if (percent < BACKLIGHT_MIN_PCT) return BACKLIGHT_MIN_PCT;
+    if (percent > 100) return 100;
+    return percent;
+}
+
+static bool ui_nvs_open(nvs_handle_t *out)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "NVS 未就绪，背光只在本次开机有效：%s", esp_err_to_name(err));
+        return false;
+    }
+    err = nvs_open(UI_NVS_NS, NVS_READWRITE, out);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ui_prefs 打不开：%s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+static int backlight_load_or_default(void)
+{
+    nvs_handle_t nvs;
+    if (!ui_nvs_open(&nvs)) return BACKLIGHT_DEFAULT;
+
+    uint8_t saved = BACKLIGHT_DEFAULT;
+    esp_err_t err = nvs_get_u8(nvs, UI_NVS_KEY_BACKLIGHT, &saved);
+    nvs_close(nvs);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return BACKLIGHT_DEFAULT;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "读背光失败：%s", esp_err_to_name(err));
+        return BACKLIGHT_DEFAULT;
+    }
+    if (saved < BACKLIGHT_MIN_PCT || saved > 100) {
+        ESP_LOGW(TAG, "背光 NVS 值异常 %u，回退默认", (unsigned)saved);
+        return BACKLIGHT_DEFAULT;
+    }
+    return (int)saved;
+}
+
+static void backlight_save(int percent)
+{
+    nvs_handle_t nvs;
+    if (!ui_nvs_open(&nvs)) return;
+
+    esp_err_t err = nvs_set_u8(nvs, UI_NVS_KEY_BACKLIGHT, (uint8_t)percent);
+    if (err == ESP_OK) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "背光保存失败：%s", esp_err_to_name(err));
+    }
+}
+
+/* 只改 PWM，不写 NVS。开机恢复用这条，避免每次上电白写一次。 */
+static void backlight_apply(int percent)
 {
     if (DISP_PIN_BL < 0) return;
-    if (percent < 0)   percent = 0;
-    if (percent > 100) percent = 100;
+    percent = backlight_clamp(percent);
     s_backlight_pct = percent;
 
     /* 10 位分辨率下满亮是 1024 而不是 1023 —— 用 1023 会让每个 PWM 周期
@@ -286,6 +348,14 @@ void display_backlight(int percent)
     uint32_t duty = (1024 * percent) / 100;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+}
+
+void display_backlight(int percent)
+{
+    percent = backlight_clamp(percent);
+    backlight_apply(percent);
+    backlight_save(percent);
+    ESP_LOGI(TAG, "背光：%d%%（已写入 NVS）", percent);
 }
 
 int display_get_backlight(void)
@@ -368,7 +438,11 @@ esp_err_t display_init(void)
      * 黑边再也不会被碰到。必须在推屏任务起来之前做，好独占 s_band_done。 */
     fill_whole_panel(C_BLACK);
 
-    display_backlight(100);
+    /* 从 NVS 恢复上次亮度；没有记录才满亮。不走 display_backlight()，
+     * 免得开机白写一次 NVS。 */
+    int bl = backlight_load_or_default();
+    backlight_apply(bl);
+    ESP_LOGI(TAG, "背光恢复：%d%%", bl);
 
     /* 推屏任务钉在核 1：核 0 画图，核 1 推屏，互不抢占 */
     BaseType_t ok = xTaskCreatePinnedToCore(blit_task, "lcd_blit", 3072,

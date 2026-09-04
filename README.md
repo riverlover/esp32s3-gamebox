@@ -261,8 +261,8 @@ B 在两页始终返回上一级：游戏列表退到平台页，平台页退到
 
 SETTINGS 采用与主页一致的 gruvbox light retro-go Options 风格：上下选择
 `Brightness`、`Volume` 或 `Controller Test`，左右调节当前档位；调音量时会立即
-播放一次 `hello` 试听，A 进入手柄测试，B 返回首页。设置只对本次开机有效，RST
-或重新上电恢复默认。
+播放一次 `hello` 试听，A 进入手柄测试，B 返回首页。音量和背光写入 NVS
+（`ui_prefs`），重启后仍保留；读失败才回退默认 50% / 100%。
 
 ### 单词学习（WORDS）
 
@@ -283,12 +283,10 @@ SETTINGS 采用与主页一致的 gruvbox light retro-go Options 风格：上下
 | 本轮结算 | A / START 再来一轮；B / SELECT 返回所选单元首页 |
 
 `main/roms/` 只用于 TF 卡不可用时的 NES 编译期回退——没插卡、卡挂不上、或者卡上
-一个合法 ROM 都没有时，会直接进这个内置游戏（当前是魂斗罗）。只有要更换这个
-回退游戏时，才需要同步修改 `main/CMakeLists.txt` 的 `EMBED_FILES` 和
-`main/nes_emu.c` 的 `ROM_CHOICE`。
-
-⚠️ **已知问题**：没插卡时屏幕上没有任何提示，直接跳进内置游戏，看起来像坏了。
-串口有日志。该加一屏「未检测到 TF 卡」的提示。
+一个合法 ROM 都没有时，会先停在「没有游戏」提示页（区分卡未挂载 / 卡上无 ROM）；
+按 **B** 回开机选模式，按 **A** 才进内置游戏（当前 `ROM_CHOICE=0` 是超级马里奥）。
+只有要更换这个回退游戏时，才需要同步修改 `main/CMakeLists.txt` 的 `EMBED_FILES`
+和 `main/nes_emu.c` 的 `ROM_CHOICE`。
 
 ### 操作（手柄）
 

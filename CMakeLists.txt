@@ -4,6 +4,14 @@ cmake_minimum_required(VERSION 3.16)
 # 开机界面都从 descriptor 读取，避免出现几份手写版本号各自漂移。
 set(PROJECT_VER "1.0.0")
 
+# 只编 TF 冒烟固件（不链模拟器/屏）。切开关后必须 fullclean 再 build：
+#   idf.py fullclean
+#   idf.py -DSD_SMOKE_ONLY=1 build flash monitor
+# 回到正式固件：
+#   idf.py fullclean
+#   idf.py -DSD_SMOKE_ONLY=0 build flash
+set(SD_SMOKE_ONLY OFF CACHE BOOL "Build TF-card-only smoke firmware")
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(esp32s3-gamebox)
 

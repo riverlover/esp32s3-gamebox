@@ -22,12 +22,14 @@ esp_err_t audio_output_init(uint32_t sample_rate);
  * 否则随后进入 Genesis 时会沿用 24 kHz，实际需要的约 26.4 kHz 就配不上。 */
 void audio_output_shutdown(void);
 
-/* 在开机选单前把音量重置为默认档位。只在本次运行中有效，不读写 NVS。 */
+/* 开机选单前从 NVS（命名空间 ui_prefs）恢复上次音量；没有记录或读失败
+ * 时用 50%。不整区 erase NVS——和单词进度共用分区，擦了会误伤。 */
 esp_err_t audio_output_settings_init(void);
 
 /* 菜单里的音量档位：0~100，menu 只用 10 的整数倍。0 视为静音——
  * audio_output_init() 会因此完全不启动 I2S/DMA/消费任务。set 立即生效
- * （消费任务下一包就按新档位淡变），但重启后一定恢复默认档位。 */
+ * （消费任务下一包就按新档位淡变），并写入 NVS，下次开机由
+ * audio_output_settings_init() 读回。 */
 int audio_output_get_volume(void);
 esp_err_t audio_output_set_volume(int percent);
 
